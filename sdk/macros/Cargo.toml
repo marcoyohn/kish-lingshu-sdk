@@ -1,0 +1,15 @@
+[package]
+name = "kish-lingshu-sdk-macros"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Source declaration macros for the Kish Lingshu Rust SDK"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = { workspace = true }
+proc-macro-crate = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true }

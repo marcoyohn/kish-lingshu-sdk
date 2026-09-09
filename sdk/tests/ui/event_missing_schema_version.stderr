@@ -1,0 +1,9 @@
+error: missing schema_version
+ --> tests/ui/event_missing_schema_version.rs:4:1
+  |
+4 | / #[event(
+5 | |     key = "orders.created",
+6 | |     topic = "orders",
+7 | |     event_type = "order.created"
+8 | | )]
+  | |__^

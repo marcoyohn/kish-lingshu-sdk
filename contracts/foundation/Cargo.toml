@@ -1,0 +1,14 @@
+[package]
+name = "kish-lingshu-foundation-contract"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Acyclic shared value primitives for Kish Lingshu contracts"
+
+[dependencies]
+chrono = { workspace = true, features = ["serde"] }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

@@ -1,0 +1,172 @@
+[
+  {
+    "event_id": "evt-1",
+    "cursor": "run-9001:1",
+    "workflow_id": 42,
+    "workflow_instance_id": 9001,
+    "root_workflow_instance_id": 9001,
+    "session_id": 100,
+    "timestamp": "2026-09-06T10:20:30+08:00",
+    "type": "workflow_state",
+    "data": { "state": "running" }
+  },
+  {
+    "event_id": "evt-2",
+    "cursor": "run-9001:2",
+    "workflow_id": 42,
+    "workflow_instance_id": 9001,
+    "root_workflow_instance_id": 9001,
+    "execution_id": 7001,
+    "execution_path": "root/agent-1",
+    "timestamp": "2026-09-06T10:20:31+08:00",
+    "type": "execution_state",
+    "data": { "state": "running", "node_id": "agent-1", "node_type": "agent" }
+  },
+  {
+    "event_id": "evt-3",
+    "cursor": "run-9001:3",
+    "workflow_id": 42,
+    "workflow_instance_id": 9001,
+    "root_workflow_instance_id": 9001,
+    "execution_id": 7001,
+    "session_id": 100,
+    "timestamp": "2026-09-06T10:20:32+08:00",
+    "type": "message",
+    "data": { "phase": "started", "role": "assistant" }
+  },
+  {
+    "event_id": "evt-4",
+    "cursor": "run-9001:4",
+    "workflow_id": 42,
+    "workflow_instance_id": 9001,
+    "root_workflow_instance_id": 9001,
+    "execution_id": 7001,
+    "session_id": 100,
+    "timestamp": "2026-09-06T10:20:33+08:00",
+    "type": "message",
+    "data": { "phase": "delta", "role": "assistant", "content": "partial" }
+  },
+  {
+    "event_id": "evt-5",
+    "cursor": "run-9001:5",
+    "workflow_id": 42,
+    "workflow_instance_id": 9001,
+    "root_workflow_instance_id": 9001,
+    "execution_id": 7001,
+    "session_id": 100,
+    "message_id": 502,
+    "timestamp": "2026-09-06T10:20:34+08:00",
+    "type": "message",
+    "data": { "phase": "completed", "role": "assistant" }
+  },
+  {
+    "event_id": "evt-6",
+    "cursor": "run-9001:6",
+    "workflow_id": 42,
+    "workflow_instance_id": 9001,
+    "root_workflow_instance_id": 9001,
+    "execution_id": 7001,
+    "tool_call_id": "call-1",
+    "timestamp": "2026-09-06T10:20:35+08:00",
+    "type": "tool_call",
+    "data": { "state": "completed", "name": "lookup", "arguments": { "id": 7 }, "result": { "name": "Ada" } }
+  },
+  {
+    "event_id": "evt-7",
+    "cursor": "run-9001:7",
+    "workflow_id": 42,
+    "workflow_instance_id": 9001,
+    "root_workflow_instance_id": 9001,
+    "execution_id": 7001,
+    "plan_id": 8001,
+    "timestamp": "2026-09-06T10:20:36+08:00",
+    "type": "plan",
+    "data": { "version": 1, "overview": "Answer safely", "items": [{ "step": "Inspect", "status": "completed" }] }
+  },
+  {
+    "event_id": "evt-8",
+    "cursor": "run-9001:8",
+    "workflow_id": 42,
+    "workflow_instance_id": 9001,
+    "root_workflow_instance_id": 9001,
+    "execution_id": 7001,
+    "timestamp": "2026-09-06T10:20:37+08:00",
+    "type": "suspension",
+    "data": { "handle": "v1.fixture", "reason": "awaiting_input", "payload": { "field": "approval" } }
+  },
+  {
+    "event_id": "evt-9",
+    "cursor": "run-9001:9",
+    "workflow_id": 42,
+    "workflow_instance_id": 9001,
+    "root_workflow_instance_id": 9001,
+    "execution_id": 7001,
+    "tool_call_id": "call-2",
+    "timestamp": "2026-09-06T10:20:38+08:00",
+    "type": "client_tool_request",
+    "data": { "suspension": "v1.tool-fixture", "name": "write_file", "arguments": { "path": "README.md" }, "execution": { "client_instance_id": "client-1", "confirmation_mode": "required" } }
+  },
+  {
+    "event_id": "evt-10",
+    "cursor": "run-9001:10",
+    "workflow_id": 42,
+    "workflow_instance_id": 9001,
+    "root_workflow_instance_id": 9001,
+    "execution_id": 7001,
+    "timestamp": "2026-09-06T10:20:39+08:00",
+    "type": "permission_request",
+    "data": { "suspension": "v1.permission-fixture", "request_id": "call-2", "action": "Write README.md", "options": ["allow_once", "reject"], "details": { "path": "README.md" } }
+  },
+  {
+    "event_id": "evt-11",
+    "cursor": "run-9001:11",
+    "workflow_id": 42,
+    "workflow_instance_id": 9001,
+    "root_workflow_instance_id": 9001,
+    "timestamp": "2026-09-06T10:20:40+08:00",
+    "type": "output",
+    "data": { "answer": 42 }
+  },
+  {
+    "event_id": "evt-12",
+    "cursor": "run-9001:12",
+    "workflow_id": 42,
+    "workflow_instance_id": 9001,
+    "root_workflow_instance_id": 9001,
+    "execution_id": 7001,
+    "timestamp": "2026-09-06T10:20:41+08:00",
+    "type": "usage",
+    "data": { "input_tokens": 100, "output_tokens": 20, "cost": "0.0012" }
+  },
+  {
+    "event_id": "evt-13",
+    "cursor": "run-9001:13",
+    "workflow_id": 42,
+    "workflow_instance_id": 9001,
+    "root_workflow_instance_id": 9001,
+    "timestamp": "2026-09-06T10:20:42+08:00",
+    "type": "failure",
+    "data": { "code": "tool_failed", "message": "lookup failed", "retryable": true, "details": { "tool": "lookup" } }
+  },
+  {
+    "event_id": "evt-14",
+    "cursor": "run-9001:14",
+    "workflow_id": 42,
+    "workflow_instance_id": 9001,
+    "root_workflow_instance_id": 9001,
+    "session_id": 100,
+    "timestamp": "2026-09-06T10:20:43+08:00",
+    "type": "compaction",
+    "data": { "phase": "succeeded", "trigger": "automatic", "input_tokens_before": 12000, "input_tokens_after": 4000, "summary_tokens": 600 }
+  },
+  {
+    "event_id": "evt-15",
+    "cursor": "run-9001:15",
+    "workflow_id": 42,
+    "workflow_instance_id": 9001,
+    "root_workflow_instance_id": 9001,
+    "timestamp": "2026-09-06T10:20:44+08:00",
+    "type": "future_node_progress",
+    "data": { "percent": 25 }
+  }
+]

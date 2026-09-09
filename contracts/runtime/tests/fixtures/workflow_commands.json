@@ -1,0 +1,62 @@
+{
+  "start": {
+    "context": {
+      "request": {
+        "actor_id": "service-orders",
+        "principal": "service",
+        "application_id": "orders-app",
+        "source": "http",
+        "request_id": "request-start-1",
+        "correlation_id": "correlation-order-42",
+        "trace": {
+          "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+        },
+        "deadline": "2026-09-06T08:00:30Z"
+      },
+      "workflow_id": 42
+    },
+    "input": {
+      "type": "structured",
+      "data": {
+        "order_id": 42
+      }
+    },
+    "bindings": {}
+  },
+  "signal": {
+    "context": {
+      "actor_id": "service-orders",
+      "principal": "service",
+      "application_id": "orders-app",
+      "source": "http",
+      "request_id": "request-signal-1",
+      "correlation_id": "correlation-order-42",
+      "trace": null,
+      "deadline": null
+    },
+    "workflow_instance_id": 9001,
+    "signal": {
+      "type": "business",
+      "data": {
+        "name": "payment.captured",
+        "payload": {
+          "payment_id": "pay-42"
+        }
+      }
+    }
+  },
+  "terminate": {
+    "context": {
+      "actor_id": "user-7",
+      "principal": "user",
+      "application_id": "orders-app",
+      "source": "http",
+      "request_id": "request-terminate-1",
+      "correlation_id": "correlation-order-42",
+      "trace": null,
+      "deadline": null
+    },
+    "workflow_instance_id": 9001,
+    "reason": "operator_cancelled"
+  }
+}

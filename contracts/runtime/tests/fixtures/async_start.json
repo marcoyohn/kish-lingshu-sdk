@@ -1,0 +1,8 @@
+{
+  "workflow_id": 42,
+  "workflow_instance_id": 9001,
+  "root_workflow_instance_id": 9001,
+  "session_id": 100,
+  "input_message_id": 501,
+  "subscription_anchor": "run-9001:0"
+}

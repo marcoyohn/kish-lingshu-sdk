@@ -1,0 +1,48 @@
+{
+  "contract_version": "1.0",
+  "event": {
+    "event_id": 8101,
+    "app_id": "orders-app",
+    "topic": "orders",
+    "event_type": "order.expiration.requested",
+    "schema_version": "1",
+    "source": "orders-scheduler",
+    "subject": "order/42",
+    "occurred_at": "2026-09-06T08:05:00Z",
+    "published_at": "2026-09-06T08:05:00Z",
+    "not_before": "2026-09-06T08:05:00Z",
+    "partition_key": "order/42",
+    "correlation_id": "correlation-order-42",
+    "causation_id": null,
+    "headers": {},
+    "payload": {
+      "order_id": 42
+    },
+    "schedule": {
+      "schedule_id": 5101,
+      "scheduled_at": "2026-09-06T08:05:00Z",
+      "schedule_key": "orders.expire",
+      "overlap_policy": "serialize"
+    }
+  },
+  "consumption": {
+    "consumption_id": 6101,
+    "subscription_id": 4101,
+    "group_id": 3101,
+    "subscription_epoch": 2,
+    "queue_epoch": 1,
+    "queue_id": 3,
+    "queue_offset": 9,
+    "invocation_id": 7101,
+    "attempt_generation": 1,
+    "mode": "sync",
+    "idempotency_key": "consumption/4101/2/1/3/9",
+    "invocation_deadline": "2026-09-06T08:05:30Z"
+  },
+  "trace": {
+    "correlation_id": "correlation-order-42",
+    "causation_id": null,
+    "traceparent": null,
+    "tracestate": null
+  }
+}

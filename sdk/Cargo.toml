@@ -1,0 +1,89 @@
+[package]
+name = "kish-lingshu-sdk"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Rust SDK for Kish Lingshu application integrations"
+
+[features]
+default = ["http-client"]
+http-client = [
+  "dep:async-stream",
+  "dep:base64",
+  "dep:bytes",
+  "dep:futures-util",
+  "dep:http",
+  "dep:httpdate",
+  "dep:percent-encoding",
+  "dep:rand",
+  "dep:reqwest",
+  "dep:rustls",
+  "dep:tokio",
+]
+event-manifest = [
+  "dep:chrono-tz",
+  "dep:cron",
+  "dep:inventory",
+  "dep:jsonschema",
+  "dep:kish-lingshu-sdk-macros",
+  "dep:schemars",
+]
+event-consumer = ["event-manifest"]
+event-consumer-http = [
+  "event-consumer",
+  "dep:axum",
+  "dep:reqwest",
+  "dep:rustls",
+  "dep:tokio",
+]
+user-task-completion = [
+  "dep:inventory",
+  "dep:jsonschema",
+  "dep:kish-lingshu-sdk-macros",
+  "dep:schemars",
+]
+user-task-completion-http = [
+  "user-task-completion",
+  "dep:axum",
+  "dep:tokio",
+]
+test-support = ["kish-lingshu-runtime-contract/test-support"]
+
+[dependencies]
+async-stream = { workspace = true, optional = true }
+async-trait = { workspace = true }
+axum = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true, optional = true }
+cron = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+futures = { workspace = true }
+http = { workspace = true, optional = true }
+httpdate = { workspace = true, optional = true }
+inventory = { workspace = true, optional = true }
+jsonschema = { workspace = true, optional = true }
+kish-lingshu-event-dispatch-contract = { workspace = true }
+kish-lingshu-foundation-contract = { workspace = true }
+kish-lingshu-runtime-contract = { workspace = true }
+kish-lingshu-sdk-macros = { path = "macros", version = "=0.1.0", optional = true }
+percent-encoding = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, optional = true }
+url = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+kish-lingshu-runtime-contract = { workspace = true, features = ["test-support"] }
+tempfile = { workspace = true }
+tokio = { workspace = true }
+tower = "0.5"
+trybuild = "1"

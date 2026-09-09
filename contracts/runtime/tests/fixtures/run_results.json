@@ -1,0 +1,49 @@
+{
+  "completed": {
+    "run": {
+      "workflow_id": 42,
+      "workflow_instance_id": 9001,
+      "root_workflow_instance_id": 9001,
+      "subscription_anchor": "run-9001:0"
+    },
+    "state": "completed",
+    "output": null
+  },
+  "failed": {
+    "run": {
+      "workflow_id": 42,
+      "workflow_instance_id": 9002,
+      "root_workflow_instance_id": 9002,
+      "subscription_anchor": "run-9002:0"
+    },
+    "state": "failed",
+    "failure": {
+      "code": "workflow_execution_failed",
+      "message": "model unavailable",
+      "retryable": true
+    }
+  },
+  "suspended": {
+    "run": {
+      "workflow_id": 42,
+      "workflow_instance_id": 9003,
+      "root_workflow_instance_id": 9003,
+      "subscription_anchor": "run-9003:0"
+    },
+    "state": "suspended",
+    "suspension": {
+      "handle": "v1.result-fixture",
+      "reason": "awaiting_approval",
+      "payload": { "action": "publish" }
+    }
+  },
+  "terminated": {
+    "run": {
+      "workflow_id": 42,
+      "workflow_instance_id": 9004,
+      "root_workflow_instance_id": 9004,
+      "subscription_anchor": "run-9004:0"
+    },
+    "state": "terminated"
+  }
+}

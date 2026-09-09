@@ -1,0 +1,5 @@
+error[E0599]: no method named `event_dispatch` found for reference `&kish_lingshu_sdk::Client<UserPrincipal>` in the current scope
+ --> tests/ui/user_cannot_publish_events.rs:4:20
+  |
+4 |     let _ = client.event_dispatch();
+  |                    ^^^^^^^^^^^^^^ method not found in `&kish_lingshu_sdk::Client<UserPrincipal>`
