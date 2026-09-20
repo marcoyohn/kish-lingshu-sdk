@@ -5,10 +5,16 @@ edition = "2021"
 license = "Apache-2.0"
 description = "Acyclic shared value primitives for Kish Lingshu contracts"
 
+[features]
+service-auth = ["dep:base64", "dep:ring", "dep:serde_json"]
+
 [dependencies]
 chrono = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 thiserror = { workspace = true }
+base64 = { workspace = true, optional = true }
+ring = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

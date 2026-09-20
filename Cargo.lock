@@ -1125,7 +1125,9 @@ dependencies = [
 name = "kish-lingshu-foundation-contract"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chrono",
+ "ring",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

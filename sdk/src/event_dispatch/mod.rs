@@ -6,6 +6,13 @@ use crate::{
     client::ClientInner, Error, MutationOptions, ProtocolDirection, ProtocolError, RequestOptions,
 };
 
+#[cfg(feature = "service-auth")]
+mod enrolled_node;
+#[cfg(feature = "service-auth")]
+pub use enrolled_node::{
+    EnrolledConsumerNode, EnrolledConsumerNodeConfig, EnrolledConsumerNodeStatus,
+};
+
 #[cfg(feature = "event-consumer")]
 mod consumer;
 #[cfg(feature = "event-consumer-http")]

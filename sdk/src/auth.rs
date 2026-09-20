@@ -34,7 +34,10 @@ pub enum CredentialError {
 
 pub struct ServiceCredential {
     application_id: String,
-    #[cfg_attr(not(feature = "http-client"), allow(dead_code))]
+    #[cfg_attr(
+        not(any(feature = "http-client", feature = "service-auth")),
+        allow(dead_code)
+    )]
     secret: Secret,
 }
 
@@ -61,7 +64,7 @@ impl ServiceCredential {
         &self.application_id
     }
 
-    #[cfg(feature = "http-client")]
+    #[cfg(any(feature = "http-client", feature = "service-auth"))]
     pub(crate) fn expose(&self) -> &str {
         self.secret.expose()
     }
@@ -100,7 +103,11 @@ impl Secret {
         Ok(Self(Arc::from(value)))
     }
 
-    #[cfg(any(feature = "http-client", feature = "event-consumer-http"))]
+    #[cfg(any(
+        feature = "http-client",
+        feature = "event-consumer-http",
+        feature = "service-auth"
+    ))]
     fn expose(&self) -> &str {
         &self.0
     }

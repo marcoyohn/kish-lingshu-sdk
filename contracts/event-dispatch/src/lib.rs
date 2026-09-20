@@ -213,6 +213,37 @@ pub struct ConsumerInstanceRegistrationRequestV1 {
     pub maximum_in_flight: u32,
 }
 
+/// Application-authenticated enrollment resolves a pre-provisioned group.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsumerEnrollmentRequest {
+    pub group_key: String,
+    pub node_id: String,
+    pub invocation_url: String,
+    pub maximum_in_flight: u32,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConsumerSession {
+    pub group_id: u64,
+    pub group_key: String,
+    pub lease: ConsumerInstanceLeaseV1,
+    pub credential: String,
+    pub expires_at: i64,
+}
+
+impl std::fmt::Debug for ConsumerSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConsumerSession")
+            .field("group_id", &self.group_id)
+            .field("group_key", &self.group_key)
+            .field("lease", &self.lease)
+            .field("credential", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsumerInstanceLeaseV1 {
     pub member_id: u64,

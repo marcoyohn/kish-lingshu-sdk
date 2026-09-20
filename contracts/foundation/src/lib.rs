@@ -12,6 +12,9 @@ use chrono::{DateTime, Utc};
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
+#[cfg(feature = "service-auth")]
+pub mod service_auth;
+
 macro_rules! string_identity {
     ($name:ident) => {
         #[derive(

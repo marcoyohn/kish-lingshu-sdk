@@ -31,10 +31,19 @@ event-manifest = [
 event-consumer = ["event-manifest"]
 event-consumer-http = [
   "event-consumer",
+  "service-auth",
   "dep:axum",
   "dep:reqwest",
   "dep:rustls",
   "dep:tokio",
+]
+service-auth = [
+  "dep:axum",
+  "dep:percent-encoding",
+  "dep:reqwest",
+  "dep:rustls",
+  "dep:tokio",
+  "kish-lingshu-foundation-contract/service-auth",
 ]
 user-task-completion = [
   "dep:inventory",

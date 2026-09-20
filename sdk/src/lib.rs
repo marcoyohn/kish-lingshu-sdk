@@ -16,9 +16,13 @@ mod request;
 
 pub mod assets;
 pub mod event_dispatch;
+#[cfg(feature = "service-auth")]
+pub mod service_auth;
 pub mod user_task;
 pub mod workflow;
 pub mod workspaces;
+#[cfg(feature = "service-auth")]
+pub use service_auth::{ServiceAuthError, ServiceConnection};
 
 pub use auth::{
     AuthenticatedUser, CallbackCredential, ConsumerGroupRegistrationCredential, CredentialError,
