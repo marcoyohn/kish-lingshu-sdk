@@ -158,10 +158,15 @@ impl<P: Principal> ClientBuilder<P> {
         let credential = self.credential.ok_or_else(|| {
             Error::configuration("credential", "a principal credential is required")
         })?;
+        let application_id = credential
+            .service_application_id()
+            .or(self.config.selected_application())
+            .map(str::to_owned);
         let binding = HttpBinding::new(&self.config, credential, P::KIND)?;
         Ok(Client {
             inner: Arc::new(ClientInner {
                 config: self.config,
+                application_id,
                 binding: Arc::new(binding),
             }),
             principal: PhantomData,
@@ -205,10 +210,12 @@ impl<P: Principal> ClientBuilder<P> {
                 ));
             }
         }
+        let application_id = context_factory.application_id().map(str::to_owned);
         drop(credential);
         Ok(Client {
             inner: Arc::new(ClientInner {
                 config: self.config,
+                application_id,
                 binding: Arc::new(ProductRuntimeBinding::new(facade, context_factory)),
             }),
             principal: PhantomData,
@@ -230,6 +237,7 @@ impl<P> fmt::Debug for ClientBuilder<P> {
 }
 
 pub(crate) struct ClientInner {
+    pub(crate) application_id: Option<String>,
     pub(crate) config: ClientConfig,
     pub(crate) binding: BindingRef,
 }

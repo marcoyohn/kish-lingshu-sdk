@@ -15,6 +15,8 @@ mod consumer_node;
 #[cfg(feature = "event-manifest")]
 mod declaration;
 mod reliable;
+mod scope;
+pub use scope::EventPublicationScope;
 
 #[cfg(feature = "event-consumer")]
 pub use consumer::{
@@ -82,7 +84,8 @@ impl EventDispatch {
     ///
     /// This direct call uses bounded in-call retry but does not make the Event
     /// atomic with a producer business transaction. Use [`Self::reliable_publisher`]
-    /// and a durable journal when that crash window must be closed.
+    /// and a durable journal to recover after journal commit. A post-business-commit
+    /// publish still leaves a gap before that journal commit.
     pub async fn publish(
         &self,
         event: PublishEvent,
@@ -92,14 +95,6 @@ impl EventDispatch {
             .validate()
             .map_err(|error| Error::configuration("event", error.to_string()))?;
         self.inner.binding.publish_event(event, options).await
-    }
-
-    async fn publish_best_effort(
-        &self,
-        event: PublishEvent,
-        options: MutationOptions,
-    ) -> Result<PublishReceipt, Error> {
-        self.publish(event, options.without_retry()).await
     }
 
     /// Builds and publishes an Event whose route is declared by its payload type.

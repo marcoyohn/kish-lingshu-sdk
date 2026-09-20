@@ -1,3 +1,4 @@
+use super::EventPublicationScope;
 use std::{collections::BTreeMap, sync::Arc, time::Duration, time::Instant};
 
 use async_trait::async_trait;
@@ -16,19 +17,20 @@ const MAX_FAILURE_MESSAGE_CHARS: usize = 512;
 /// Producer-side guarantee applied to one Topic/Event type route.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EventPublicationReliability {
-    /// One network attempt. Loss before Kish Lingshu accepts custody is allowed.
-    BestEffort,
     /// Bounded idempotent retry. Success proves Kish Lingshu accepted custody.
     Confirmed,
-    /// Intent is journaled with business state before confirmed handoff.
+    /// Confirmed send first; independently journal classified failures for recovery.
+    /// A process exit before failure registration may lose the Event.
+    PersistOnFailure,
+    /// Intent is independently journaled before confirmed handoff.
     Durable,
 }
 
 impl EventPublicationReliability {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::BestEffort => "BEST_EFFORT",
             Self::Confirmed => "CONFIRMED",
+            Self::PersistOnFailure => "PERSIST_ON_FAILURE",
             Self::Durable => "DURABLE",
         }
     }
@@ -139,9 +141,9 @@ pub enum EventPublicationPolicyError {
     #[error("missing publication policy for ({topic}, {event_type})")]
     MissingRoute { topic: String, event_type: String },
     #[error(
-        "recovered durable publication route ({topic}, {event_type}) is now configured as {actual:?}"
+        "recovered journaled publication route ({topic}, {event_type}) is now configured as {actual:?}"
     )]
-    RecoveredRouteNotDurable {
+    RecoveredRouteNotRecoverable {
         topic: String,
         event_type: String,
         actual: EventPublicationReliability,
@@ -233,16 +235,22 @@ pub struct ReliablePublicationConfigError {
     pub message: String,
 }
 
-/// Immutable Event publication intent persisted before a durable network attempt.
+/// Immutable Event publication shared by both journal-using policies.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DurableEventPublication {
+    scope: EventPublicationScope,
     event: PublishEvent,
     idempotency_key: String,
     request_digest: String,
 }
 
 impl DurableEventPublication {
+    pub fn scope(&self) -> &EventPublicationScope {
+        &self.scope
+    }
+
     pub fn new(
+        scope: EventPublicationScope,
         event: PublishEvent,
         idempotency_key: impl Into<String>,
     ) -> Result<Self, ReliablePublicationError> {
@@ -258,6 +266,7 @@ impl DurableEventPublication {
         let request = serde_json::to_vec(&normalized)
             .map_err(|error| ReliablePublicationError::InvalidPublication(error.to_string()))?;
         Ok(Self {
+            scope,
             event,
             idempotency_key,
             request_digest: format!("{:x}", Sha256::digest(request)),
@@ -374,10 +383,14 @@ impl EventPublicationJournalError {
 /// `append_standalone` must commit before returning. `append` must use the
 /// caller's supplied transaction without committing it. Implementations bind an
 /// idempotency key to `request_digest`, return the original state for an
-/// identical replay, and reject changed content. Mark operations must be
+/// identical replay within the immutable scope, and reject changed content or
+/// foreign publication owners. Mark operations must be
 /// conditional so accepted or terminal state never regresses.
 #[async_trait]
 pub trait EventPublicationJournal: Send + Sync {
+    /// All operations must be restricted to this immutable owner.
+    fn scope(&self) -> &EventPublicationScope;
+
     type Transaction<'transaction>: Send
     where
         Self: 'transaction;
@@ -390,6 +403,18 @@ pub trait EventPublicationJournal: Send + Sync {
         recover_after: DateTime<Utc>,
     ) -> Result<EventPublicationJournalState, EventPublicationJournalError>;
 
+    /// Atomically commits an observed failure and its exact publication in an
+    /// independent transaction. Retryable failures require a retry time; permanent
+    /// failures must never become recoverable, including on a crash during registration.
+    /// Existing terminal state is returned unchanged; changed digests are rejected.
+    /// Pending means a retryable failure has been durably registered.
+    async fn record_failure_standalone(
+        &self,
+        publication: &DurableEventPublication,
+        failure: &EventPublicationFailure,
+        retry_at: Option<DateTime<Utc>>,
+    ) -> Result<EventPublicationJournalState, EventPublicationJournalError>;
+
     async fn append(
         &self,
         transaction: &mut Self::Transaction<'_>,
@@ -397,7 +422,7 @@ pub trait EventPublicationJournal: Send + Sync {
         recover_after: DateTime<Utc>,
     ) -> Result<EventPublicationJournalState, EventPublicationJournalError>;
 
-    /// Loads at most `limit` recoverable entries due at or before `due_at` in
+    /// Loads only this journal scope, at most `limit` recoverable entries due at or before `due_at` in
     /// deterministic due-time order. Implementations should use an indexed
     /// range/keyset query and must not use an unbounded scan or offset.
     async fn load_due(
@@ -469,24 +494,52 @@ impl<J> ReliableEventPublisher<J>
 where
     J: EventPublicationJournal,
 {
+    pub fn scope(&self) -> &EventPublicationScope {
+        self.journal.scope()
+    }
+
+    /// Validate at composition and again before every operation; performs no I/O.
+    pub fn validate_scope(&self) -> Result<(), ReliablePublicationError> {
+        if self.dispatch.inner.application_id.as_deref() != Some(self.scope().application_id()) {
+            return Err(EventPublicationJournalError::new(
+                "publication_application_mismatch",
+                "SDK client application does not match the journal owner",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
+    fn wire_options(
+        &self,
+        options: MutationOptions,
+    ) -> Result<MutationOptions, ReliablePublicationError> {
+        Ok(MutationOptions::new(
+            self.scope()
+                .publication_key(options.idempotency_key().as_str()),
+        )?
+        .with_request_options(options.request().clone()))
+    }
+
     /// Publishes according to the route policy.
     ///
     /// Durable routes commit a standalone journal intent before network I/O.
+    /// PersistOnFailure routes access the journal only after confirmed sending fails.
     pub async fn publish(
         &self,
         event: PublishEvent,
         options: MutationOptions,
     ) -> Result<EventPublicationOutcome, ReliablePublicationError> {
+        self.validate_scope()?;
         validate_event(&event)?;
         let reliability = self.policy_for(&event)?;
         match reliability {
-            EventPublicationReliability::BestEffort | EventPublicationReliability::Confirmed => {
-                self.publish_direct(reliability, event, options)
-                    .await
-                    .map(EventPublicationOutcome::Accepted)
+            EventPublicationReliability::Confirmed
+            | EventPublicationReliability::PersistOnFailure => {
+                self.publish_direct(reliability, event, options).await
             }
             EventPublicationReliability::Durable => {
-                let publication = durable_publication(event, &options)?;
+                let publication = durable_publication(self.scope().clone(), event, &options)?;
                 let recover_after = add_duration(Utc::now(), self.config.orphan_timeout)?;
                 let state = self
                     .journal
@@ -515,15 +568,14 @@ where
         &self,
         pending: PendingEventPublication,
     ) -> Result<EventPublicationOutcome, ReliablePublicationError> {
+        self.validate_scope()?;
+        self.scope().ensure_matches(&pending.scope)?;
         match pending.kind {
             PendingEventPublicationKind::Direct {
                 reliability,
                 event,
                 options,
-            } => self
-                .publish_direct(reliability, event, options)
-                .await
-                .map(EventPublicationOutcome::Accepted),
+            } => self.publish_direct(reliability, event, options).await,
             PendingEventPublicationKind::Durable {
                 publication,
                 options,
@@ -536,6 +588,7 @@ where
     pub async fn recover_due(
         &self,
     ) -> Result<EventPublicationRecoveryResult, ReliablePublicationError> {
+        self.validate_scope()?;
         let due_at = Utc::now();
         let publications = self
             .journal
@@ -549,13 +602,18 @@ where
         };
         let started = Instant::now();
         for publication in publications {
+            self.scope().ensure_matches(publication.scope())?;
             if started.elapsed() >= self.config.recovery_time_budget {
                 result.time_budget_exhausted = true;
                 break;
             }
             let reliability = self.policy_for(publication.event())?;
-            if reliability != EventPublicationReliability::Durable {
-                return Err(EventPublicationPolicyError::RecoveredRouteNotDurable {
+            if !matches!(
+                reliability,
+                EventPublicationReliability::Durable
+                    | EventPublicationReliability::PersistOnFailure
+            ) {
+                return Err(EventPublicationPolicyError::RecoveredRouteNotRecoverable {
                     topic: publication.event().topic.clone(),
                     event_type: publication.event().event_type.clone(),
                     actual: reliability,
@@ -587,17 +645,62 @@ where
         reliability: EventPublicationReliability,
         event: PublishEvent,
         options: MutationOptions,
-    ) -> Result<PublishReceipt, ReliablePublicationError> {
-        let result = match reliability {
-            EventPublicationReliability::BestEffort => {
-                self.dispatch.publish_best_effort(event, options).await
+    ) -> Result<EventPublicationOutcome, ReliablePublicationError> {
+        match reliability {
+            EventPublicationReliability::Confirmed => self
+                .dispatch
+                .publish(event, self.wire_options(options)?)
+                .await
+                .map(EventPublicationOutcome::Accepted)
+                .map_err(Into::into),
+            EventPublicationReliability::PersistOnFailure => {
+                // Build the immutable replay value before sending, without storage I/O.
+                let publication = durable_publication(self.scope().clone(), event, &options)?;
+                match self
+                    .dispatch
+                    .publish(publication.event.clone(), self.wire_options(options)?)
+                    .await
+                {
+                    Ok(receipt) => Ok(EventPublicationOutcome::Accepted(receipt)),
+                    Err(error) => {
+                        let failure = classify_pre_custody_failure(&error);
+                        let retry_at = self.retry_at(&failure)?;
+                        let state = self
+                            .journal
+                            .record_failure_standalone(&publication, &failure, retry_at)
+                            .await
+                            .map_err(|source| ReliablePublicationError::FailureNotPersisted {
+                                failure: failure.clone(),
+                                source,
+                            })?;
+                        Ok(match state {
+                            EventPublicationJournalState::Pending => failure_outcome(failure),
+                            EventPublicationJournalState::Accepted(receipt) => {
+                                EventPublicationOutcome::Accepted(receipt)
+                            }
+                            EventPublicationJournalState::PermanentFailure(failure) => {
+                                EventPublicationOutcome::PermanentFailure(failure)
+                            }
+                        })
+                    }
+                }
             }
-            EventPublicationReliability::Confirmed => self.dispatch.publish(event, options).await,
             EventPublicationReliability::Durable => {
                 unreachable!("durable publication is journaled")
             }
-        };
-        result.map_err(ReliablePublicationError::from)
+        }
+    }
+
+    fn retry_at(
+        &self,
+        failure: &EventPublicationFailure,
+    ) -> Result<Option<DateTime<Utc>>, ReliablePublicationError> {
+        match failure.kind {
+            EventPublicationFailureKind::Retryable => {
+                Ok(Some(add_duration(Utc::now(), self.config.retry_delay)?))
+            }
+            EventPublicationFailureKind::Permanent => Ok(None),
+        }
     }
 
     async fn dispatch_from_state(
@@ -626,7 +729,7 @@ where
     ) -> Result<EventPublicationOutcome, ReliablePublicationError> {
         match self
             .dispatch
-            .publish(publication.event.clone(), options)
+            .publish(publication.event.clone(), self.wire_options(options)?)
             .await
         {
             Ok(receipt) => {
@@ -638,12 +741,7 @@ where
             }
             Err(error) => {
                 let failure = classify_pre_custody_failure(&error);
-                let retry_at = match failure.kind {
-                    EventPublicationFailureKind::Retryable => {
-                        Some(add_duration(Utc::now(), self.config.retry_delay)?)
-                    }
-                    EventPublicationFailureKind::Permanent => None,
-                };
+                let retry_at = self.retry_at(&failure)?;
                 if !self
                     .journal
                     .mark_failed(&publication, &failure, retry_at)
@@ -651,14 +749,7 @@ where
                 {
                     return Ok(EventPublicationOutcome::Skipped);
                 }
-                Ok(match failure.kind {
-                    EventPublicationFailureKind::Retryable => {
-                        EventPublicationOutcome::RetryScheduled(failure)
-                    }
-                    EventPublicationFailureKind::Permanent => {
-                        EventPublicationOutcome::PermanentFailure(failure)
-                    }
-                })
+                Ok(failure_outcome(failure))
             }
         }
     }
@@ -689,10 +780,12 @@ where
         event: PublishEvent,
         options: MutationOptions,
     ) -> Result<PendingEventPublication, ReliablePublicationError> {
+        self.publisher.validate_scope()?;
         validate_event(&event)?;
         let reliability = self.publisher.policy_for(&event)?;
         let kind = match reliability {
-            EventPublicationReliability::BestEffort | EventPublicationReliability::Confirmed => {
+            EventPublicationReliability::Confirmed
+            | EventPublicationReliability::PersistOnFailure => {
                 PendingEventPublicationKind::Direct {
                     reliability,
                     event,
@@ -700,7 +793,8 @@ where
                 }
             }
             EventPublicationReliability::Durable => {
-                let publication = durable_publication(event, &options)?;
+                let publication =
+                    durable_publication(self.publisher.scope().clone(), event, &options)?;
                 let recover_after = add_duration(Utc::now(), self.publisher.config.orphan_timeout)?;
                 let state = self
                     .publisher
@@ -714,13 +808,18 @@ where
                 }
             }
         };
-        Ok(PendingEventPublication { reliability, kind })
+        Ok(PendingEventPublication {
+            scope: self.publisher.scope().clone(),
+            reliability,
+            kind,
+        })
     }
 }
 
 /// Opaque publication token returned before the producer transaction commits.
 #[derive(Debug)]
 pub struct PendingEventPublication {
+    scope: EventPublicationScope,
     reliability: EventPublicationReliability,
     kind: PendingEventPublicationKind,
 }
@@ -781,7 +880,13 @@ pub enum ReliablePublicationError {
     Configuration(#[from] ReliablePublicationConfigError),
     #[error(transparent)]
     Journal(#[from] EventPublicationJournalError),
-    #[error("invalid durable Event publication: {0}")]
+    #[error("publication failed and recovery could not be persisted: {failure:?}; {source}")]
+    FailureNotPersisted {
+        failure: EventPublicationFailure,
+        #[source]
+        source: EventPublicationJournalError,
+    },
+    #[error("invalid Event publication: {0}")]
     InvalidPublication(String),
     #[error(transparent)]
     Publication(Box<SdkError>),
@@ -793,6 +898,15 @@ impl From<SdkError> for ReliablePublicationError {
     }
 }
 
+fn failure_outcome(failure: EventPublicationFailure) -> EventPublicationOutcome {
+    match failure.kind {
+        EventPublicationFailureKind::Retryable => EventPublicationOutcome::RetryScheduled(failure),
+        EventPublicationFailureKind::Permanent => {
+            EventPublicationOutcome::PermanentFailure(failure)
+        }
+    }
+}
+
 fn validate_event(event: &PublishEvent) -> Result<(), ReliablePublicationError> {
     event
         .validate()
@@ -800,10 +914,11 @@ fn validate_event(event: &PublishEvent) -> Result<(), ReliablePublicationError> 
 }
 
 fn durable_publication(
+    scope: EventPublicationScope,
     event: PublishEvent,
     options: &MutationOptions,
 ) -> Result<DurableEventPublication, ReliablePublicationError> {
-    DurableEventPublication::new(event, options.idempotency_key().as_str().to_string())
+    DurableEventPublication::new(scope, event, options.idempotency_key().as_str().to_string())
 }
 
 fn add_duration(
@@ -908,6 +1023,7 @@ mod tests {
     #[test]
     fn durable_publication_digest_changes_with_content() {
         let first = DurableEventPublication::new(
+            EventPublicationScope::new("orders-app", "checkout").unwrap(),
             PublishEvent::dynamic(
                 "checkout",
                 super::super::DynamicEvent::new(
@@ -920,6 +1036,7 @@ mod tests {
         )
         .unwrap();
         let second = DurableEventPublication::new(
+            EventPublicationScope::new("orders-app", "checkout").unwrap(),
             PublishEvent::dynamic(
                 "checkout",
                 super::super::DynamicEvent::new(

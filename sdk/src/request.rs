@@ -150,11 +150,6 @@ impl MutationOptions {
     pub fn idempotency_key(&self) -> &IdempotencyKey {
         &self.idempotency_key
     }
-
-    pub(crate) fn without_retry(mut self) -> Self {
-        self.request.retry_limit = Some(0);
-        self
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -205,10 +200,10 @@ mod tests {
     }
 
     #[test]
-    fn best_effort_override_disables_transport_retry() {
+    fn retry_override_is_independent_of_publication_reliability() {
         let options = MutationOptions::new("event/order-42")
             .unwrap()
-            .without_retry();
+            .with_request_options(RequestOptions::new().with_retry_limit(0).unwrap());
         assert_eq!(options.request().retry_limit(), Some(0));
     }
 }

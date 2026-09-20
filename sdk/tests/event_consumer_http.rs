@@ -86,6 +86,7 @@ fn invocation(mode: DeliveryMode, deadline_offset_seconds: i64) -> InvocationV1 
             }),
         },
         consumption: InvocationConsumptionV1 {
+            group_key: None,
             consumption_id: 2001,
             subscription_id: 3001,
             group_id: 4001,

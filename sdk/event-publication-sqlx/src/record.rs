@@ -1,6 +1,6 @@
 use kish_lingshu_sdk::event_dispatch::{
     DurableEventPublication, EventPublicationFailure, EventPublicationJournalError,
-    EventPublicationJournalState, PublishEvent, PublishReceipt,
+    EventPublicationJournalState, EventPublicationScope, PublishEvent, PublishReceipt,
 };
 
 pub(crate) const STATE_PENDING: &str = "PENDING";
@@ -19,6 +19,8 @@ pub(crate) struct StoredStateRow {
 
 #[derive(sqlx::FromRow)]
 pub(crate) struct StoredPublicationRow {
+    pub(crate) application_id: String,
+    pub(crate) publisher_id: String,
     pub(crate) idempotency_key: String,
     pub(crate) request_digest: String,
     pub(crate) event_json: String,
@@ -55,13 +57,17 @@ pub(crate) fn decode_publication(
             format!("stored durable Event is invalid: {error}"),
         )
     })?;
-    let publication =
-        DurableEventPublication::new(event, row.idempotency_key).map_err(|error| {
-            journal_error(
-                "event_validation_failure",
-                format!("stored durable Event failed validation: {error}"),
-            )
-        })?;
+    let publication = DurableEventPublication::new(
+        EventPublicationScope::new(row.application_id, row.publisher_id)?,
+        event,
+        row.idempotency_key,
+    )
+    .map_err(|error| {
+        journal_error(
+            "event_validation_failure",
+            format!("stored durable Event failed validation: {error}"),
+        )
+    })?;
     ensure_digest(&row.request_digest, &publication)?;
     Ok(publication)
 }

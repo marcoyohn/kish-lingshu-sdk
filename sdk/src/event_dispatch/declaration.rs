@@ -199,6 +199,7 @@ fn validate_consumers(
         .map(|event| (event.key.as_str(), event))
         .collect::<BTreeMap<_, _>>();
     let mut keys = BTreeSet::new();
+    let mut routes = BTreeMap::new();
     for consumer in consumers {
         validate_key("Consumer", &consumer.key)?;
         validate_key("Consumer Group", &consumer.group_key)?;
@@ -225,6 +226,21 @@ fn validate_consumers(
         validate_policy(consumer)?;
         let mut selector_keys = BTreeSet::new();
         for selector in &consumer.selectors {
+            let route = (&selector.topic, &selector.event_type, &consumer.group_key);
+            if let Some(existing) = routes.insert(route, &consumer.key) {
+                return Err(invalid(
+                    "Consumer",
+                    &consumer.key,
+                    format!(
+                        "duplicate route ({}, {}, {}): {} conflicts with {}",
+                        selector.topic,
+                        selector.event_type,
+                        consumer.group_key,
+                        existing,
+                        consumer.key
+                    ),
+                ));
+            }
             if !selector_keys.insert(&selector.event_key) {
                 return Err(invalid(
                     "Consumer",

@@ -24,6 +24,7 @@ use super::SourceCatalogError;
 pub struct ConsumerSelector {
     topic: String,
     event_type: String,
+    consumer_group: String,
 }
 
 impl ConsumerSelector {
@@ -34,10 +35,24 @@ impl ConsumerSelector {
         let selector = Self {
             topic: topic.into(),
             event_type: event_type.into(),
+            consumer_group: String::new(),
         };
         validate_selector("topic", &selector.topic)?;
         validate_selector("event_type", &selector.event_type)?;
         Ok(selector)
+    }
+
+    pub fn with_consumer_group(
+        mut self,
+        group: impl Into<String>,
+    ) -> Result<Self, ConsumerRegistryError> {
+        self.consumer_group = group.into();
+        validate_selector("consumer_group", &self.consumer_group)?;
+        Ok(self)
+    }
+
+    pub fn consumer_group(&self) -> &str {
+        &self.consumer_group
     }
 
     pub fn topic(&self) -> &str {
@@ -277,8 +292,14 @@ pub enum ConsumerRegistryError {
     EmptyApplicationId,
     #[error("Event consumer {field} must be non-empty, bounded ASCII without whitespace")]
     InvalidSelector { field: &'static str },
-    #[error("Event consumer is already registered for {topic}/{event_type}")]
-    DuplicateConsumer { topic: String, event_type: String },
+    #[error("duplicate Event consumer ({topic}, {event_type}, {consumer_group}): {existing_handler} conflicts with {conflicting_handler}")]
+    DuplicateConsumer {
+        topic: String,
+        event_type: String,
+        consumer_group: String,
+        existing_handler: String,
+        conflicting_handler: String,
+    },
     #[error("Event Dispatch Handler type {handler_type} is already bound")]
     DuplicateBinding { handler_type: String },
     #[error("annotated Event Dispatch Handler type {handler_type} has no bound instance")]
@@ -290,6 +311,7 @@ pub enum ConsumerRegistryError {
 pub struct ConsumerRegistry {
     app_id: String,
     consumers: HashMap<ConsumerSelector, Arc<dyn ErasedConsumer>>,
+    diagnostics: HashMap<ConsumerSelector, String>,
 }
 
 impl ConsumerRegistry {
@@ -301,6 +323,7 @@ impl ConsumerRegistry {
         Ok(Self {
             app_id,
             consumers: HashMap::new(),
+            diagnostics: HashMap::new(),
         })
     }
 
@@ -320,14 +343,11 @@ impl ConsumerRegistry {
         let selector = consumer.selector();
         validate_selector("topic", selector.topic())?;
         validate_selector("event_type", selector.event_type())?;
-        if self.consumers.contains_key(&selector) {
-            return Err(ConsumerRegistryError::DuplicateConsumer {
-                topic: selector.topic,
-                event_type: selector.event_type,
-            });
-        }
-        self.consumers
-            .insert(selector, Arc::new(RegisteredConsumer(consumer)));
+        self.insert(
+            selector,
+            Arc::new(RegisteredConsumer(consumer)),
+            type_name::<C>().to_owned(),
+        )?;
         Ok(self)
     }
 
@@ -335,13 +355,52 @@ impl ConsumerRegistry {
         &self.app_id
     }
 
+    fn insert(
+        &mut self,
+        selector: ConsumerSelector,
+        consumer: Arc<dyn ErasedConsumer>,
+        name: String,
+    ) -> Result<(), ConsumerRegistryError> {
+        if let Some(existing) = self.diagnostics.get(&selector) {
+            return Err(ConsumerRegistryError::DuplicateConsumer {
+                topic: selector.topic,
+                event_type: selector.event_type,
+                consumer_group: selector.consumer_group,
+                existing_handler: existing.clone(),
+                conflicting_handler: name,
+            });
+        }
+        self.diagnostics.insert(selector.clone(), name);
+        self.consumers.insert(selector, consumer);
+        Ok(())
+    }
+
     pub(super) fn find(&self, invocation: &InvocationV1) -> Option<Arc<dyn ErasedConsumer>> {
-        self.consumers
-            .get(&ConsumerSelector {
-                topic: invocation.event.topic.clone(),
-                event_type: invocation.event.event_type.clone(),
-            })
-            .cloned()
+        if let Some(group) = &invocation.consumption.group_key {
+            let selector =
+                ConsumerSelector::new(&invocation.event.topic, &invocation.event.event_type)
+                    .ok()?
+                    .with_consumer_group(group)
+                    .ok()?;
+            // Only explicitly legacy registrations may omit a group.
+            return self.consumers.get(&selector).cloned().or_else(|| {
+                self.consumers
+                    .get(
+                        &ConsumerSelector::new(
+                            &invocation.event.topic,
+                            &invocation.event.event_type,
+                        )
+                        .ok()?,
+                    )
+                    .cloned()
+            });
+        }
+        // Compatibility for older centers: never guess when the route is ambiguous.
+        let mut matches = self.consumers.iter().filter(|(route, _)| {
+            route.topic == invocation.event.topic && route.event_type == invocation.event.event_type
+        });
+        let first = matches.next()?.1.clone();
+        matches.next().is_none().then_some(first)
     }
 }
 
@@ -416,20 +475,16 @@ impl ConsumerRegistryBuilder {
                     handler_type: (descriptor.handler_type_name)().to_string(),
                 }
             })?;
-            let selector = ConsumerSelector::new(descriptor.topic, descriptor.event_type)?;
-            if self.registry.consumers.contains_key(&selector) {
-                return Err(ConsumerRegistryError::DuplicateConsumer {
-                    topic: selector.topic,
-                    event_type: selector.event_type,
-                });
-            }
-            self.registry.consumers.insert(
+            let selector = ConsumerSelector::new(descriptor.topic, descriptor.event_type)?
+                .with_consumer_group(descriptor.group_key)?;
+            self.registry.insert(
                 selector,
                 Arc::new(LinkedConsumer {
                     instance: binding.instance.clone(),
                     invoke: descriptor.invoke,
                 }),
-            );
+                descriptor.diagnostic_name.to_owned(),
+            )?;
         }
 
         let mut unused_bindings = self
@@ -489,11 +544,39 @@ impl ErasedConsumer for LinkedConsumer {
 }
 
 pub(super) fn linked_consumer_definitions() -> Result<Vec<ConsumerDefinition>, SourceCatalogError> {
+    let mut routes = BTreeMap::new();
+    for descriptor in inventory::iter::<EventDispatchHandlerDescriptor> {
+        let route = (
+            descriptor.topic,
+            descriptor.event_type,
+            descriptor.group_key,
+        );
+        if let Some(existing) = routes.insert(route, descriptor.diagnostic_name) {
+            return Err(SourceCatalogError::Descriptor {
+                declaration: descriptor.diagnostic_name.to_owned(),
+                message: format!(
+                    "duplicate Event consumer ({}, {}, {}): {} conflicts with {}",
+                    route.0, route.1, route.2, existing, descriptor.diagnostic_name
+                ),
+            });
+        }
+    }
     Ok(inventory::iter::<EventDispatchHandlerDescriptor>
         .into_iter()
         .map(|descriptor| {
             default_consumer_definition(
-                descriptor.consumer_key,
+                if descriptor.consumer_key.is_empty() {
+                    use sha2::{Digest, Sha256};
+                    let encoded = serde_json::to_vec(&(
+                        descriptor.topic,
+                        descriptor.event_type,
+                        descriptor.group_key,
+                    ))
+                    .expect("string route serializes");
+                    format!("consumer-{:x}", Sha256::digest(encoded))
+                } else {
+                    descriptor.consumer_key.to_owned()
+                },
                 descriptor.group_key,
                 descriptor.maximum_concurrency,
                 EventSelector {

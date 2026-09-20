@@ -501,7 +501,7 @@ fn parse_event_args(attributes: &[Attribute]) -> syn::Result<EventArgs> {
 }
 
 struct DispatchArgs {
-    group: LitStr,
+    group: Option<LitStr>,
     maximum_concurrency: u32,
 }
 
@@ -537,14 +537,15 @@ impl syn::parse::Parse for DispatchArgs {
             ));
         }
         Ok(Self {
-            group: group.ok_or_else(|| Error::new(Span::call_site(), "missing group"))?,
+            group,
             maximum_concurrency,
         })
     }
 }
 
 struct ConsumerArgs {
-    key: LitStr,
+    key: Option<LitStr>,
+    consumer_group: Option<LitStr>,
     event: Type,
 }
 
@@ -585,8 +586,20 @@ fn expand_event_dispatch(
         let type_name_name = format_ident!("__event_dispatch_type_name_{}", method_name);
         let invoke_name = format_ident!("__event_dispatch_invoke_{}", method_name);
         let event = &consumer.event;
-        let consumer_key = &consumer.key;
-        let group = &dispatch.group;
+        let consumer_key = consumer
+            .key
+            .clone()
+            .unwrap_or_else(|| LitStr::new("", Span::call_site()));
+        let group = consumer
+            .consumer_group
+            .as_ref()
+            .or(dispatch.group.as_ref())
+            .ok_or_else(|| {
+                Error::new_spanned(
+                    &method.sig.ident,
+                    "missing consumer_group on event_consumer (or group default on event_dispatch)",
+                )
+            })?;
         let maximum_concurrency = dispatch.maximum_concurrency;
 
         generated_methods.push(syn::parse2(quote! {
@@ -682,10 +695,18 @@ fn find_event_consumer_attribute(
         return Ok(None);
     };
     let mut key = None;
+    let mut consumer_group = None;
     let mut event = None;
     attribute.parse_nested_meta(|meta| {
         if meta.path.is_ident("key") {
             set_once(&mut key, meta.value()?.parse()?, &meta, "key")
+        } else if meta.path.is_ident("consumer_group") {
+            set_once(
+                &mut consumer_group,
+                meta.value()?.parse()?,
+                &meta,
+                "consumer_group",
+            )
         } else if meta.path.is_ident("event") {
             set_once(&mut event, meta.value()?.parse()?, &meta, "event")
         } else {
@@ -695,7 +716,8 @@ fn find_event_consumer_attribute(
     Ok(Some((
         index,
         ConsumerArgs {
-            key: key.ok_or_else(|| Error::new_spanned(attribute, "missing key"))?,
+            key,
+            consumer_group,
             event: event.ok_or_else(|| Error::new_spanned(attribute, "missing event"))?,
         },
     )))

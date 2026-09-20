@@ -105,6 +105,9 @@ pub struct InvocationV1 {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InvocationConsumptionV1 {
+    /// Authoritative logical group selected by the dispatch subscription.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_key: Option<String>,
     pub consumption_id: u64,
     pub subscription_id: u64,
     pub group_id: u64,

@@ -1718,21 +1718,44 @@ pub(crate) fn decode_application_error(
         )),
         Err(application_error) => match serde_json::from_slice::<RuntimeError>(body) {
             Ok(runtime) => match runtime_error(runtime, request_id) {
-                Error::Application(failure) => Error::Application(
-                    failure.with_http_context(
-                        status,
-                        retry_after.and_then(|value| parse_retry_after(value, now)),
-                    ),
-                ),
+                Error::Application(failure) => Error::Application(failure.with_http_context(
+                    status,
+                    retry_after.and_then(|value| parse_retry_after(value, now)),
+                )),
                 other => other,
             },
-            Err(runtime_error) => Error::Protocol(ProtocolError {
-                direction: ProtocolDirection::DecodeResponse,
-                message: format!(
+            Err(runtime_error) => {
+                let message = format!(
                     "HTTP {status} did not contain an application problem: {application_error}; legacy runtime error decode also failed: {runtime_error}"
-                ),
-                request_id: Some(request_id),
-            }),
+                );
+                // Gateways may return an empty/HTML transient response. Preserve the
+                // HTTP classification after bounded retries, so producer recovery does
+                // not incorrectly terminalize a temporarily unavailable publication.
+                if matches!(status, 408 | 425 | 429 | 500..=599) {
+                    Error::Application(
+                        ApplicationFailure::new(
+                            ApplicationProblem::new(
+                                kish_lingshu_runtime_contract::ProblemCode::known(
+                                    kish_lingshu_runtime_contract::UNAVAILABLE_PROBLEM,
+                                ),
+                                message,
+                                request_id,
+                            )
+                            .with_retryable(true),
+                        )
+                        .with_http_context(
+                            status,
+                            retry_after.and_then(|value| parse_retry_after(value, now)),
+                        ),
+                    )
+                } else {
+                    Error::Protocol(ProtocolError {
+                        direction: ProtocolDirection::DecodeResponse,
+                        message,
+                        request_id: Some(request_id),
+                    })
+                }
+            }
         },
     }
 }
@@ -1819,7 +1842,7 @@ mod tests {
         assert_eq!(failure.retry_after, Some(Duration::from_secs(11)));
 
         let malformed = decode_application_error(
-            500,
+            403,
             b"not-json",
             None,
             RequestId::from("client-request-3"),
@@ -1833,6 +1856,26 @@ mod tests {
                 ..
             }) if request_id.as_ref() == "client-request-3"
         ));
+    }
+
+    #[test]
+    fn malformed_transient_http_errors_remain_recoverable_after_retry_exhaustion() {
+        for status in [408, 425, 429, 500, 502, 503, 504] {
+            let error = decode_application_error(
+                status,
+                b"<html>upstream down</html>",
+                Some("7"),
+                RequestId::from("gateway-request"),
+                now(),
+            );
+            let Error::Application(failure) = error else {
+                panic!("HTTP status must survive decoding failure")
+            };
+            assert_eq!(failure.http_status, Some(status));
+            assert!(failure.problem.retryable);
+            assert_eq!(failure.problem.request_id.as_ref(), "gateway-request");
+            assert_eq!(failure.retry_after, Some(Duration::from_secs(7)));
+        }
     }
 
     #[test]

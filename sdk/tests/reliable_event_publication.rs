@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc, Mutex,
     },
     time::Duration,
@@ -13,15 +13,15 @@ use kish_lingshu_runtime_contract::{
     test_support::ContractProductRuntimeFixture, ApplicationProblem, ApplicationResult,
     EventPublisher as RuntimeEventPublisher, IdempotencyKey, InvocationSource, MutationDisposition,
     PrincipalKind, ProblemCode, ProductRuntimeFacade, RequestContext, TrustedContextFactory,
-    UNAVAILABLE_PROBLEM,
+    FORBIDDEN_PROBLEM, UNAVAILABLE_PROBLEM,
 };
 use kish_lingshu_sdk::{
     event_dispatch::{
         DurableEventPublication, DynamicEvent, EventPublicationFailure,
         EventPublicationFailureKind, EventPublicationJournal, EventPublicationJournalError,
         EventPublicationJournalState, EventPublicationOutcome, EventPublicationPolicyCatalog,
-        EventPublicationReliability, EventPublicationRoute, EventRoute, PublishEvent,
-        PublishReceipt, ReliableEventPublisher, ReliablePublicationConfig,
+        EventPublicationReliability, EventPublicationRoute, EventPublicationScope, EventRoute,
+        PublishEvent, PublishReceipt, ReliableEventPublisher, ReliablePublicationConfig,
         ReliablePublicationError,
     },
     ClientBuilder, ClientConfig, MutationOptions, ServiceCredential,
@@ -48,11 +48,26 @@ enum FakeState {
     Permanent(EventPublicationFailure),
 }
 
-#[derive(Default)]
 struct FakeJournal {
+    scope: EventPublicationScope,
     records: Mutex<BTreeMap<String, FakeRecord>>,
     fail_next_accept: AtomicBool,
+    fail_registration: AtomicBool,
+    journal_calls: AtomicUsize,
     load_barrier: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+}
+
+impl Default for FakeJournal {
+    fn default() -> Self {
+        Self {
+            scope: EventPublicationScope::new("orders-app", "checkout").unwrap(),
+            records: Mutex::default(),
+            fail_next_accept: AtomicBool::default(),
+            fail_registration: AtomicBool::default(),
+            journal_calls: AtomicUsize::default(),
+            load_barrier: Mutex::default(),
+        }
+    }
 }
 
 impl FakeJournal {
@@ -163,6 +178,10 @@ impl RuntimeEventPublisher for RetryableFailingEventPublisher {
 
 #[async_trait]
 impl EventPublicationJournal for FakeJournal {
+    fn scope(&self) -> &EventPublicationScope {
+        &self.scope
+    }
+
     type Transaction<'transaction> = FakeTransaction;
 
     async fn append_standalone(
@@ -170,12 +189,57 @@ impl EventPublicationJournal for FakeJournal {
         publication: &DurableEventPublication,
         recover_after: DateTime<Utc>,
     ) -> Result<EventPublicationJournalState, EventPublicationJournalError> {
+        self.journal_calls.fetch_add(1, Ordering::Relaxed);
         let mut transaction = FakeTransaction::default();
         let state = self
             .append(&mut transaction, publication, recover_after)
             .await?;
         self.commit(transaction)?;
         Ok(state)
+    }
+
+    async fn record_failure_standalone(
+        &self,
+        publication: &DurableEventPublication,
+        failure: &EventPublicationFailure,
+        retry_at: Option<DateTime<Utc>>,
+    ) -> Result<EventPublicationJournalState, EventPublicationJournalError> {
+        self.journal_calls.fetch_add(1, Ordering::Relaxed);
+        if self.fail_registration.load(Ordering::Acquire) {
+            return Err(EventPublicationJournalError::new(
+                "storage_unavailable",
+                "cannot commit",
+            ));
+        }
+        let (state, recover_after) = match failure.kind() {
+            EventPublicationFailureKind::Retryable => (
+                FakeState::Retryable(failure.clone()),
+                Some(retry_at.ok_or_else(|| {
+                    EventPublicationJournalError::new("missing_retry_time", "required")
+                })?),
+            ),
+            EventPublicationFailureKind::Permanent => (FakeState::Permanent(failure.clone()), None),
+        };
+        let mut records = self.records.lock().unwrap();
+        if let Some(existing) = records.get(publication.idempotency_key()) {
+            if existing.publication.request_digest() != publication.request_digest() {
+                return Err(EventPublicationJournalError::new(
+                    "idempotency_conflict",
+                    "changed event",
+                ));
+            }
+            if !matches!(existing.state, FakeState::Pending | FakeState::Retryable(_)) {
+                return Ok(Self::state(existing));
+            }
+        }
+        let record = FakeRecord {
+            publication: publication.clone(),
+            recover_after,
+            state,
+        };
+        let result = Self::state(&record);
+        records.insert(publication.idempotency_key().to_owned(), record);
+        Ok(result)
     }
 
     async fn append(
@@ -379,13 +443,16 @@ fn event(event_type: &str, order_id: u64) -> PublishEvent {
 }
 
 #[tokio::test]
-async fn policies_select_best_effort_confirmed_and_direct_durable_paths() {
+async fn policies_select_confirmed_send_first_and_durable_paths() {
     let fixture = ContractProductRuntimeFixture::default();
     let journal = Arc::new(FakeJournal::default());
     let publisher = build_publisher(
         &fixture,
         [
-            ("order.best-effort", EventPublicationReliability::BestEffort),
+            (
+                "order.send-first",
+                EventPublicationReliability::PersistOnFailure,
+            ),
             ("order.confirmed", EventPublicationReliability::Confirmed),
             ("order.durable", EventPublicationReliability::Durable),
         ],
@@ -395,8 +462,8 @@ async fn policies_select_best_effort_confirmed_and_direct_durable_paths() {
 
     publisher
         .publish(
-            event("order.best-effort", 1),
-            MutationOptions::new("orders/1/best-effort").unwrap(),
+            event("order.send-first", 1),
+            MutationOptions::new("orders/1/send-first").unwrap(),
         )
         .await
         .unwrap();
@@ -407,6 +474,8 @@ async fn policies_select_best_effort_confirmed_and_direct_durable_paths() {
         )
         .await
         .unwrap();
+    assert_eq!(journal.record_count(), 0);
+    assert_eq!(journal.journal_calls.load(Ordering::Relaxed), 0);
     let outcome = publisher
         .publish(
             event("order.durable", 3),
@@ -742,4 +811,549 @@ fn fake_terminal_states_retain_failure_diagnostics() {
         permanent,
         FakeState::Permanent(failure) if failure.code() == "invalid"
     ));
+}
+
+// Observe storage ordering at the actual runtime boundary and simulate response loss.
+struct ObservedPublisher {
+    journal: Arc<FakeJournal>,
+    calls: AtomicUsize,
+    expected_records: usize,
+    permanent: bool,
+    accept_then_lose: Option<Arc<dyn RuntimeEventPublisher>>,
+}
+
+#[async_trait]
+impl RuntimeEventPublisher for ObservedPublisher {
+    async fn publish(
+        &self,
+        context: RequestContext,
+        event: PublishEvent,
+        key: IdempotencyKey,
+    ) -> ApplicationResult<PublishReceipt> {
+        assert_eq!(self.journal.record_count(), self.expected_records);
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        if let Some(center) = &self.accept_then_lose {
+            center.publish(context.clone(), event, key).await?;
+        }
+        Err(ApplicationProblem::new(
+            ProblemCode::known(if self.permanent {
+                FORBIDDEN_PROBLEM
+            } else {
+                UNAVAILABLE_PROBLEM
+            }),
+            "simulated publication failure",
+            context.request_id().clone(),
+        )
+        .with_retryable(!self.permanent))
+    }
+
+    async fn get(
+        &self,
+        _context: RequestContext,
+        _event_id: kish_lingshu_sdk::event_dispatch::EventId,
+    ) -> ApplicationResult<Option<kish_lingshu_sdk::event_dispatch::EventRecord>> {
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn send_first_failure_is_persisted_after_sending_and_recovery_deduplicates_response_loss() {
+    let fixture = ContractProductRuntimeFixture::default();
+    let journal = Arc::new(FakeJournal::default());
+    let transport = Arc::new(ObservedPublisher {
+        journal: journal.clone(),
+        calls: AtomicUsize::new(0),
+        expected_records: 0,
+        permanent: false,
+        accept_then_lose: Some(fixture.event_publisher.clone()),
+    });
+    let policies = || {
+        [(
+            "order.send-first",
+            EventPublicationReliability::PersistOnFailure,
+        )]
+    };
+    let failing = build_publisher_with_runtime(
+        fixture
+            .facade
+            .clone()
+            .with_event_publisher(transport.clone()),
+        policies(),
+        ReliablePublicationConfig::default(),
+        journal.clone(),
+    );
+    let original = event("order.send-first", 8);
+    let outcome = failing
+        .publish(
+            original.clone(),
+            MutationOptions::new("response-lost").unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        EventPublicationOutcome::RetryScheduled(_)
+    ));
+    assert_eq!(transport.calls.load(Ordering::Relaxed), 1);
+    assert!(journal.has_retryable_failure("response-lost"));
+    assert_eq!(fixture.event_publisher.published_count(), 1);
+    let recovered = build_publisher(
+        &fixture,
+        policies(),
+        ReliablePublicationConfig::default(),
+        journal.clone(),
+    );
+    assert_eq!(recovered.recover_due().await.unwrap().scanned, 0);
+    journal.make_all_due();
+    let stored = journal.load_due(Utc::now(), 100).await.unwrap();
+    assert_eq!(stored[0].event(), &original);
+    assert_eq!(stored[0].idempotency_key(), "response-lost");
+    assert_eq!(recovered.recover_due().await.unwrap().accepted, 1);
+    assert_eq!(fixture.event_publisher.published_count(), 1);
+    assert_eq!(
+        journal
+            .accepted_receipt("response-lost")
+            .unwrap()
+            .mutation
+            .disposition,
+        MutationDisposition::Duplicate
+    );
+}
+
+#[tokio::test]
+async fn confirmed_failure_has_no_journal_and_durable_intent_precedes_sending() {
+    for (policy, expected_records) in [
+        (EventPublicationReliability::Confirmed, 0),
+        (EventPublicationReliability::Durable, 1),
+    ] {
+        let fixture = ContractProductRuntimeFixture::default();
+        let journal = Arc::new(FakeJournal::default());
+        let transport = Arc::new(ObservedPublisher {
+            journal: journal.clone(),
+            calls: AtomicUsize::new(0),
+            expected_records,
+            permanent: false,
+            accept_then_lose: None,
+        });
+        let publisher = build_publisher_with_runtime(
+            fixture.facade.clone().with_event_publisher(transport),
+            [("order.test", policy)],
+            ReliablePublicationConfig::default(),
+            journal.clone(),
+        );
+        let result = publisher
+            .publish(
+                event("order.test", 1),
+                MutationOptions::new("ordering").unwrap(),
+            )
+            .await;
+        if policy == EventPublicationReliability::Confirmed {
+            assert!(matches!(
+                result,
+                Err(ReliablePublicationError::Publication(_))
+            ));
+            assert_eq!(journal.journal_calls.load(Ordering::Relaxed), 0);
+        } else {
+            assert!(matches!(
+                result,
+                Ok(EventPublicationOutcome::RetryScheduled(_))
+            ));
+        }
+    }
+}
+
+#[tokio::test]
+async fn send_first_permanent_failure_is_terminal_and_storage_failure_is_explicit() {
+    for (permanent, storage_failure) in [(true, false), (false, true), (true, true)] {
+        let fixture = ContractProductRuntimeFixture::default();
+        let journal = Arc::new(FakeJournal::default());
+        journal
+            .fail_registration
+            .store(storage_failure, Ordering::Release);
+        let transport = Arc::new(ObservedPublisher {
+            journal: journal.clone(),
+            calls: AtomicUsize::new(0),
+            expected_records: 0,
+            permanent,
+            accept_then_lose: None,
+        });
+        let publisher = build_publisher_with_runtime(
+            fixture
+                .facade
+                .clone()
+                .with_event_publisher(transport.clone()),
+            [("order.test", EventPublicationReliability::PersistOnFailure)],
+            ReliablePublicationConfig::default(),
+            journal.clone(),
+        );
+        let result = publisher
+            .publish(
+                event("order.test", 1),
+                MutationOptions::new("failed-send").unwrap(),
+            )
+            .await;
+        if storage_failure {
+            let Err(ReliablePublicationError::FailureNotPersisted { failure, source }) = result
+            else {
+                panic!("must not claim scheduled recovery")
+            };
+            assert_eq!(source.code, "storage_unavailable");
+            assert_eq!(
+                failure.kind(),
+                if permanent {
+                    EventPublicationFailureKind::Permanent
+                } else {
+                    EventPublicationFailureKind::Retryable
+                }
+            );
+            assert_eq!(journal.record_count(), 0);
+        } else {
+            assert!(matches!(
+                result,
+                Ok(EventPublicationOutcome::PermanentFailure(_))
+            ));
+            assert_eq!(journal.record_count(), 1);
+            journal.make_all_due();
+            assert_eq!(publisher.recover_due().await.unwrap().scanned, 0);
+        }
+        assert_eq!(transport.calls.load(Ordering::Relaxed), 1);
+    }
+}
+
+#[tokio::test]
+async fn send_first_legacy_prepare_does_not_enlist_journal_and_dispatch_registers_independently() {
+    let fixture = ContractProductRuntimeFixture::default();
+    let journal = Arc::new(FakeJournal::default());
+    let publisher = build_publisher_with_runtime(
+        fixture
+            .facade
+            .clone()
+            .with_event_publisher(Arc::new(RetryableFailingEventPublisher)),
+        [("order.test", EventPublicationReliability::PersistOnFailure)],
+        ReliablePublicationConfig::default(),
+        journal.clone(),
+    );
+    let mut tx = FakeTransaction::default();
+    let pending = publisher
+        .in_transaction(&mut tx)
+        .publish(
+            event("order.test", 1),
+            MutationOptions::new("legacy-send-first").unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(tx.staged.is_empty());
+    assert_eq!(journal.record_count(), 0);
+    assert_eq!(journal.journal_calls.load(Ordering::Relaxed), 0);
+    journal.commit(tx).unwrap();
+    assert!(matches!(
+        publisher.dispatch(pending).await.unwrap(),
+        EventPublicationOutcome::RetryScheduled(_)
+    ));
+    assert_eq!(journal.record_count(), 1);
+}
+
+#[tokio::test]
+async fn recovery_rejects_downgrade_to_confirmed_before_sending() {
+    let fixture = ContractProductRuntimeFixture::default();
+    let journal = Arc::new(FakeJournal::default());
+    journal
+        .record_failure_standalone(
+            &DurableEventPublication::new(
+                journal.scope().clone(),
+                event("order.test", 1),
+                "pending-key",
+            )
+            .unwrap(),
+            &EventPublicationFailure::retryable("unavailable", None),
+            Some(Utc::now()),
+        )
+        .await
+        .unwrap();
+    let publisher = build_publisher(
+        &fixture,
+        [("order.test", EventPublicationReliability::Confirmed)],
+        ReliablePublicationConfig::default(),
+        journal,
+    );
+    assert!(matches!(
+        publisher.recover_due().await,
+        Err(ReliablePublicationError::Policy(_))
+    ));
+    assert_eq!(fixture.event_publisher.published_count(), 0);
+}
+
+#[cfg(all(feature = "http-client", feature = "event-consumer-http"))]
+#[tokio::test]
+async fn reliability_policies_share_default_http_retries_and_stable_request_identity() {
+    use axum::{
+        body::Bytes,
+        extract::State,
+        http::{HeaderMap, StatusCode},
+        response::IntoResponse,
+        routing::post,
+        Json, Router,
+    };
+    use kish_lingshu_runtime_contract::MutationReceipt;
+    use kish_lingshu_sdk::event_dispatch::{EventId, EventVisibility};
+
+    struct Server {
+        requests: Mutex<Vec<(HeaderMap, Bytes)>>,
+        journal: Arc<FakeJournal>,
+        expected_records: usize,
+        fail_until: usize,
+        rejection: StatusCode,
+    }
+    async fn send(
+        State(state): State<Arc<Server>>,
+        headers: HeaderMap,
+        body: Bytes,
+    ) -> axum::response::Response {
+        assert_eq!(state.journal.record_count(), state.expected_records);
+        let mut requests = state.requests.lock().unwrap();
+        requests.push((headers, body));
+        if requests.len() <= state.fail_until {
+            return state.rejection.into_response();
+        }
+        let now = Utc::now();
+        Json(PublishReceipt {
+            mutation: MutationReceipt::accepted("receipt-request", now),
+            event_id: EventId::new(42).unwrap(),
+            published_at: now,
+            visible_at: now,
+            visibility: EventVisibility::Ready,
+        })
+        .into_response()
+    }
+
+    for (policy, fail_until, rejection, expected_attempts) in [
+        (
+            EventPublicationReliability::Confirmed,
+            2,
+            StatusCode::SERVICE_UNAVAILABLE,
+            3,
+        ),
+        (
+            EventPublicationReliability::PersistOnFailure,
+            2,
+            StatusCode::SERVICE_UNAVAILABLE,
+            3,
+        ),
+        (
+            EventPublicationReliability::Durable,
+            2,
+            StatusCode::SERVICE_UNAVAILABLE,
+            3,
+        ),
+        (
+            EventPublicationReliability::PersistOnFailure,
+            99,
+            StatusCode::SERVICE_UNAVAILABLE,
+            4,
+        ),
+        (
+            EventPublicationReliability::PersistOnFailure,
+            99,
+            StatusCode::FORBIDDEN,
+            1,
+        ),
+    ] {
+        let journal = Arc::new(FakeJournal::default());
+        let state = Arc::new(Server {
+            requests: Mutex::new(Vec::new()),
+            journal: journal.clone(),
+            expected_records: usize::from(policy == EventPublicationReliability::Durable),
+            fail_until,
+            rejection,
+        });
+        let app = Router::new()
+            .route("/openapi/event-dispatch/v1/events", post(send))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ClientBuilder::new(ClientConfig::new(format!("http://{address}/")))
+            .service_credential(ServiceCredential::new("orders-app", "test-secret").unwrap())
+            .connect()
+            .unwrap();
+        let policies = EventPublicationPolicyCatalog::new([(
+            EventPublicationRoute::new("orders", "order.test").unwrap(),
+            policy,
+        )])
+        .unwrap();
+        let publisher = client.event_dispatch().reliable_publisher(
+            policies,
+            ReliablePublicationConfig::default(),
+            journal.clone(),
+        );
+        let outcome = publisher
+            .publish(
+                event("order.test", 1),
+                MutationOptions::new("http-stable-key").unwrap(),
+            )
+            .await
+            .unwrap();
+        task.abort();
+        {
+            let requests = state.requests.lock().unwrap();
+            assert_eq!(requests.len(), expected_attempts);
+            for (headers, body) in requests.iter() {
+                assert_eq!(
+                    headers.get("idempotency-key").unwrap(),
+                    journal.scope().publication_key("http-stable-key").as_str()
+                );
+                assert_eq!(
+                    headers.get("x-request-id"),
+                    requests[0].0.get("x-request-id")
+                );
+                assert_eq!(body, &requests[0].1);
+            }
+        }
+        if fail_until == 2 {
+            assert!(matches!(outcome, EventPublicationOutcome::Accepted(_)));
+            assert_eq!(
+                journal.journal_calls.load(Ordering::Relaxed),
+                usize::from(policy == EventPublicationReliability::Durable)
+            );
+        } else if rejection == StatusCode::FORBIDDEN {
+            assert!(matches!(
+                outcome,
+                EventPublicationOutcome::PermanentFailure(_)
+            ));
+            assert!(journal
+                .load_due(Utc::now() + TimeDelta::days(1), 10)
+                .await
+                .unwrap()
+                .is_empty());
+        } else {
+            assert!(matches!(
+                outcome,
+                EventPublicationOutcome::RetryScheduled(_)
+            ));
+            assert!(journal.has_retryable_failure("http-stable-key"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn send_first_validation_rejection_never_sends_or_journals() {
+    let fixture = ContractProductRuntimeFixture::default();
+    let journal = Arc::new(FakeJournal::default());
+    let publisher = build_publisher(
+        &fixture,
+        [("order.test", EventPublicationReliability::PersistOnFailure)],
+        ReliablePublicationConfig::default(),
+        journal.clone(),
+    );
+    let mut invalid = event("order.test", 1);
+    invalid.topic.clear();
+    assert!(matches!(
+        publisher
+            .publish(invalid, MutationOptions::new("invalid-event").unwrap())
+            .await,
+        Err(ReliablePublicationError::InvalidPublication(_))
+    ));
+    assert_eq!(journal.journal_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(fixture.event_publisher.published_count(), 0);
+}
+
+#[tokio::test]
+async fn application_mismatch_fails_before_journal_or_transport_access() {
+    let fixture = ContractProductRuntimeFixture::default();
+    let journal = Arc::new(FakeJournal {
+        scope: EventPublicationScope::new("another-app", "checkout").unwrap(),
+        ..Default::default()
+    });
+    let publisher = build_publisher(
+        &fixture,
+        [("order.test", EventPublicationReliability::PersistOnFailure)],
+        ReliablePublicationConfig::default(),
+        journal.clone(),
+    );
+    assert!(publisher.validate_scope().is_err());
+    assert!(publisher
+        .publish(event("order.test", 1), MutationOptions::new("key").unwrap())
+        .await
+        .is_err());
+    assert!(publisher.recover_due().await.is_err());
+    let mut transaction = FakeTransaction::default();
+    assert!(publisher
+        .in_transaction(&mut transaction)
+        .publish(event("order.test", 1), MutationOptions::new("key").unwrap())
+        .await
+        .is_err());
+    assert!(transaction.staged.is_empty());
+    assert_eq!(fixture.event_publisher.published_count(), 0);
+    assert_eq!(journal.journal_calls.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn pending_handle_cannot_be_dispatched_by_another_publisher() {
+    let fixture = ContractProductRuntimeFixture::default();
+    let first = build_publisher(
+        &fixture,
+        [("order.test", EventPublicationReliability::Confirmed)],
+        ReliablePublicationConfig::default(),
+        Arc::new(FakeJournal::default()),
+    );
+    let other_journal = Arc::new(FakeJournal {
+        scope: EventPublicationScope::new("orders-app", "another-service").unwrap(),
+        ..Default::default()
+    });
+    let second = build_publisher(
+        &fixture,
+        [("order.test", EventPublicationReliability::Confirmed)],
+        ReliablePublicationConfig::default(),
+        other_journal.clone(),
+    );
+    let mut transaction = FakeTransaction::default();
+    let pending = first
+        .in_transaction(&mut transaction)
+        .publish(event("order.test", 1), MutationOptions::new("key").unwrap())
+        .await
+        .unwrap();
+    assert!(
+        matches!(second.dispatch(pending).await.unwrap_err(), ReliablePublicationError::Journal(error) if error.code == "publication_scope_mismatch")
+    );
+    assert_eq!(other_journal.journal_calls.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn same_application_distinct_publishers_can_send_identical_caller_keys() {
+    let fixture = ContractProductRuntimeFixture::default();
+    let mut receipts = Vec::new();
+    for (publisher_id, order_id) in [("checkout", 1), ("billing", 2)] {
+        let journal = Arc::new(FakeJournal {
+            scope: EventPublicationScope::new("orders-app", publisher_id).unwrap(),
+            ..Default::default()
+        });
+        let publisher = build_publisher(
+            &fixture,
+            [("order.test", EventPublicationReliability::Durable)],
+            ReliablePublicationConfig::default(),
+            journal.clone(),
+        );
+        let outcome = publisher
+            .publish(
+                event("order.test", order_id),
+                MutationOptions::new("same-key").unwrap(),
+            )
+            .await
+            .unwrap();
+        let EventPublicationOutcome::Accepted(receipt) = outcome else {
+            panic!("expected accepted")
+        };
+        receipts.push(receipt.event_id);
+        let replay = publisher
+            .publish(
+                event("order.test", order_id),
+                MutationOptions::new("same-key").unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            matches!(replay, EventPublicationOutcome::Accepted(r) if r.event_id == receipt.event_id)
+        );
+    }
+    assert_ne!(receipts[0], receipts[1]);
 }
