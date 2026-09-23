@@ -151,12 +151,13 @@ impl WorkflowResultProjector {
         })
     }
 
-    fn terminated(&self) -> RuntimeResult<WorkflowRunResult> {
-        if self.output.is_some() || self.failure.is_some() || self.suspension.is_some() {
+    fn terminated(&mut self) -> RuntimeResult<WorkflowRunResult> {
+        if self.output.is_some() || self.failure.is_some() {
             return Err(invariant(
-                "terminated Workflow contains output, failure, or suspension detail",
+                "terminated Workflow contains output or failure detail",
             ));
         }
+        self.suspension = None;
         Ok(WorkflowRunResult::Terminated {
             run: self.run.clone(),
         })
@@ -242,6 +243,7 @@ mod tests {
                     9001,
                     2,
                     WorkflowEventKind::Message(MessageEvent {
+                        finalization: Default::default(),
                         phase: MessagePhase::Completed,
                         role: "assistant".to_string(),
                         content: Some("presentation only".to_string()),
@@ -310,6 +312,28 @@ mod tests {
         assert_eq!(
             terminated
                 .observe(&event(9001, 1, state(WorkflowState::Terminated)))
+                .unwrap(),
+            Some(WorkflowRunResult::Terminated { run: run() })
+        );
+    }
+
+    #[test]
+    fn user_termination_discards_outstanding_suspension_without_successful_output() {
+        let mut projector = WorkflowResultProjector::new(run());
+        projector
+            .observe(&event(
+                9001,
+                1,
+                WorkflowEventKind::Suspension(SuspensionEvent {
+                    handle: SuspensionHandle::issue("stop-test").unwrap(),
+                    reason: "waiting for tool".into(),
+                    payload: None,
+                }),
+            ))
+            .unwrap();
+        assert_eq!(
+            projector
+                .observe(&event(9001, 2, state(WorkflowState::Terminated)))
                 .unwrap(),
             Some(WorkflowRunResult::Terminated { run: run() })
         );

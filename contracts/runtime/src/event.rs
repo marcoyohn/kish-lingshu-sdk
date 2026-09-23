@@ -49,12 +49,32 @@ pub struct ExecutionStateEvent {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct MessageEvent {
+    #[serde(default, flatten)]
+    pub finalization: MessageFinalization,
     pub phase: MessagePhase,
     pub role: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+}
+
+/// An authoritative replacement of a partial reply. Ordinary streamed completion
+/// keeps its existing content-free representation.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct MessageFinalization {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_mode: Option<MessageContentMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub user_stopped: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageContentMode {
+    Snapshot,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -723,6 +723,7 @@ impl ContractWorkflowRuntime {
                 run,
                 workflow_instance_id,
                 WorkflowEventKind::Message(MessageEvent {
+                    finalization: Default::default(),
                     phase: phase.clone(),
                     role: "assistant".to_string(),
                     content,

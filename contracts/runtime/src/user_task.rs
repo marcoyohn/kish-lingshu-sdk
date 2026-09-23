@@ -169,6 +169,7 @@ extensible_string_enum! {
         PendingRead => "pending_read",
         Completing => "completing",
         CompletionFailed => "completion_failed",
+        Cancelled => "cancelled",
         Completed => "completed",
     }
 }

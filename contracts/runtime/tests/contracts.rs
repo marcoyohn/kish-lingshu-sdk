@@ -204,6 +204,7 @@ fn workflow_event_serializes_kind_at_the_top_level() {
         plan_id: None,
         timestamp: "2026-08-22T00:00:00Z".to_string(),
         kind: WorkflowEventKind::Message(MessageEvent {
+            finalization: Default::default(),
             phase: MessagePhase::Delta,
             role: "assistant".to_string(),
             content: Some("hello".to_string()),
