@@ -201,6 +201,27 @@ impl ServiceConnection {
         self.0.shared.registration.lock().await
     }
 
+    /// Wait for catalog-dependent enrollment while discovery HTTP is already
+    /// serving. This is control-plane activation, never business-work retry.
+    pub async fn wait_for_catalog<T, F, Fut>(&self, mut enroll: F) -> Result<T, ServiceAuthError>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T, ServiceAuthError>>,
+    {
+        let mut closed = self.subscribe_closed();
+        loop {
+            self.ensure_open()?;
+            let result = tokio::select! { _=closed.changed()=>return Err(ServiceAuthError::Closed),result=enroll()=>result };
+            match result {
+                Ok(value) => return Ok(value),
+                Err(ServiceAuthError::Http(404 | 422 | 429 | 503))
+                | Err(ServiceAuthError::Transport) => {}
+                Err(error) => return Err(error),
+            }
+            tokio::select! { _=closed.changed()=>return Err(ServiceAuthError::Closed),_=tokio::time::sleep(std::time::Duration::from_secs(3))=>{} }
+        }
+    }
+
     pub fn application_id(&self) -> &str {
         self.0.shared.credential.application_id()
     }

@@ -51,3 +51,6 @@ pub use kish_lingshu_sdk_macros::{event_job, EventPayload};
 pub use kish_lingshu_sdk_macros::{
     lingshu_service, service_call, service_event, user_task_completion_handler,
 };
+
+#[cfg(feature = "service-http")]
+pub mod provider;

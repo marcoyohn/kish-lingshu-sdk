@@ -141,6 +141,19 @@ impl ServiceHttpAdapter {
             .map_err(|_| ServiceAuthError::InvalidNodeConfig)? = Some(registration.subscribe());
         Ok(registration)
     }
+    /// Keep the catalog endpoint serving while published dependencies are pending.
+    /// Dropping this future cancels activation; authorization errors are terminal.
+    pub async fn enroll_when_available(
+        &self,
+        node_id: &str,
+        invocation_url: &str,
+    ) -> Result<EnrolledService, ServiceAuthError> {
+        self.state
+            .connection
+            .wait_for_catalog(|| self.enroll(node_id, invocation_url))
+            .await
+    }
+
     /// Authentication cannot accidentally be omitted from the public adapter.
     pub fn router(&self, invocation_url: &str) -> Result<Router, ServiceAuthError> {
         let router = Router::new()

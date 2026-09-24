@@ -89,6 +89,26 @@ pub struct ServiceRegistryBuilder {
 }
 
 impl ServiceRegistryBuilder {
+    /// Start host assembly before any provider has declared its operations.
+    /// The completed manifest is validated by `build`.
+    pub fn empty(application_id: impl Into<String>) -> Result<Self, ServiceError> {
+        let application_id = application_id.into();
+        if !valid_key(&application_id) {
+            return Err(ServiceError::rejected(
+                "invalid_application",
+                "Invalid application identity",
+            ));
+        }
+        Ok(Self {
+            manifest: ServiceManifest {
+                contract_version: SERVICE_CONTRACT_VERSION,
+                application_id,
+                services: Vec::new(),
+            },
+            handlers: BTreeMap::new(),
+        })
+    }
+
     pub fn new(mut manifest: ServiceManifest) -> Result<Self, ServiceError> {
         manifest.normalize();
         validate_manifest(&manifest)?;
@@ -199,6 +219,9 @@ impl ServiceRegistryBuilder {
     }
 
     pub fn build(mut self) -> Result<ServiceRegistry, ServiceError> {
+        if !self.manifest.services.is_empty() {
+            validate_manifest(&self.manifest)?;
+        }
         let mut operations = BTreeMap::new();
         let mut event_routes = std::collections::BTreeSet::new();
         for service in &self.manifest.services {
