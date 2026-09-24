@@ -1,13 +1,10 @@
-#![cfg(feature = "user-task-completion")]
+#![cfg(feature = "service-manifest")]
 
 use std::sync::Arc;
 
 use kish_lingshu_sdk::{
-    user_task::completion::{
-        CompletionContext, CompletionRegistry, CompletionRegistryError, CompletionResult,
-        CompletionSourceCatalog,
-    },
-    user_task_handlers,
+    lingshu_service,
+    user_task::completion::{CompletionContext, CompletionResult},
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -20,9 +17,9 @@ struct Output;
 
 struct First;
 
-#[user_task_handlers]
+#[lingshu_service(key = "reviews")]
 impl First {
-    #[completion_handler(task_type = "duplicate.approval.v1")]
+    #[user_task_completion_handler(task_type = "duplicate.approval.v1", operation="complete",version="v1",modes=["sync"],idempotent=true)]
     async fn complete(
         &self,
         _context: CompletionContext,
@@ -34,9 +31,9 @@ impl First {
 
 struct Second;
 
-#[user_task_handlers]
+#[lingshu_service(key = "reviews")]
 impl Second {
-    #[completion_handler(task_type = "duplicate.approval.v1")]
+    #[user_task_completion_handler(task_type = "duplicate.approval.v1", operation="complete",version="v1",modes=["sync"],idempotent=true)]
     async fn complete(
         &self,
         _context: CompletionContext,
@@ -47,24 +44,17 @@ impl Second {
 }
 
 #[test]
-fn duplicate_task_types_are_rejected_at_registry_and_source_collection() {
-    let mut builder = CompletionRegistry::builder("approval-app").unwrap();
-    builder.bind(Arc::new(First)).unwrap();
-    builder.bind(Arc::new(Second)).unwrap();
-    let error = match builder.build() {
-        Ok(_) => panic!("registry unexpectedly accepted duplicate task types"),
-        Err(error) => error,
-    };
-    assert!(matches!(
-        error,
-        CompletionRegistryError::DuplicateTaskType { ref task_type, .. }
-            if task_type == "duplicate.approval.v1"
-    ));
-
-    let error = CompletionSourceCatalog::collect().unwrap_err();
-    assert!(matches!(
-        error,
-        CompletionRegistryError::DuplicateTaskType { ref task_type, .. }
-            if task_type == "duplicate.approval.v1"
-    ));
+fn duplicate_operations_are_rejected_before_readiness_and_export() {
+    use kish_lingshu_sdk::services::*;
+    let mut builder = ServiceRegistryBuilder::new(ServiceManifest {
+        contract_version: 1,
+        application_id: "app".into(),
+        services: vec![First::lingshu_service_definition()],
+    })
+    .unwrap();
+    Arc::new(First).bind_lingshu_services(&mut builder).unwrap();
+    assert!(Arc::new(Second)
+        .bind_lingshu_services(&mut builder)
+        .is_err());
+    assert!(export_manifest("app").is_err());
 }

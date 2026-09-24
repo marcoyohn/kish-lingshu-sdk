@@ -114,7 +114,8 @@ pub struct UserTaskCompletionExecution {
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<String>,
-    pub binding_key: String,
+    pub version: String,
+    pub contract_digest: String,
     pub service_key: String,
     pub operation_key: String,
     pub attempt_count: u64,
@@ -155,7 +156,7 @@ pub struct UserTaskCompletionAttempt {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserTaskCompletionDetail {
-    pub binding_key: String,
+    pub handler: crate::service::UserTaskServiceBinding,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<UserTaskCompletionProblem>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -251,14 +252,15 @@ mod tests {
     #[test]
     fn execution_observation_omits_payloads_and_credentials() {
         let detail = UserTaskCompletionDetail {
-            binding_key: "default".to_string(),
+            handler: serde_json::from_value(serde_json::json!({"service_key":"review","operation_key":"complete","version":"v1","contract_digest":"a".repeat(64)})).unwrap(),
             problem: None,
             execution: Some(UserTaskCompletionExecution {
                 command_id: 9001,
                 invocation_id: "user-task-completion/9001".to_string(),
                 state: "effect_pending".to_string(),
                 outcome: None,
-                binding_key: "default".to_string(),
+                version: "v1".into(),
+                contract_digest: "a".repeat(64),
                 service_key: "kishee-ykm".to_string(),
                 operation_key: "user-task.complete.v1".to_string(),
                 attempt_count: 2,

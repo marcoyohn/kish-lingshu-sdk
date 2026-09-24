@@ -53,12 +53,54 @@ pub enum ServiceAuthError {
     Closed,
 }
 
+pub(crate) struct InstanceRegistrationState {
+    request: Option<kish_lingshu_foundation_contract::ServiceInstanceRegistration>,
+}
+impl InstanceRegistrationState {
+    pub(crate) fn request(
+        &mut self,
+        node: &str,
+    ) -> kish_lingshu_foundation_contract::ServiceInstanceRegistration {
+        self.request
+            .get_or_insert_with(
+                || kish_lingshu_foundation_contract::ServiceInstanceRegistration {
+                    instance_id: format!("instance-{:x}", Sha256::digest(node.as_bytes())),
+                    incarnation_id: uuid::Uuid::new_v4().to_string(),
+                    generation: None,
+                },
+            )
+            .clone()
+    }
+    pub(crate) fn accept(
+        &mut self,
+        identity: Option<&kish_lingshu_foundation_contract::ServiceInstanceIdentity>,
+    ) -> Result<(), ServiceAuthError> {
+        let request = self
+            .request
+            .as_mut()
+            .ok_or(ServiceAuthError::InvalidResponse)?;
+        let identity = identity.ok_or(ServiceAuthError::InvalidResponse)?;
+        if identity.instance_id != request.instance_id
+            || identity.generation.is_empty()
+            || request
+                .generation
+                .as_ref()
+                .is_some_and(|g| g != &identity.generation)
+        {
+            return Err(ServiceAuthError::InvalidResponse);
+        }
+        request.generation = Some(identity.generation.clone());
+        Ok(())
+    }
+}
+
 struct Shared {
     client: Client,
     base: Url,
     credential: ServiceCredential,
     trust: RwLock<ServiceTrust>,
     nonces: Mutex<HashMap<[u8; 32], i64>>,
+    registration: tokio::sync::Mutex<InstanceRegistrationState>,
     closed: watch::Sender<Option<ServiceAuthError>>,
 }
 
@@ -97,11 +139,9 @@ impl Drop for ConnectionOwner {
 
 /// A cloneable authenticated connection. The last clone cancels trust refresh.
 ///
-/// Authentication rejection (HTTP 401/403) from trust discovery, enrollment or
-/// any enrolled node's heartbeat closes every clone, rejects callbacks and stops
-/// sibling nodes sharing this connection. This intentionally fails closed even
-/// when a session rejection represents a paused/deleted member or group rather
-/// than root-key revocation. Independent connections have independent lifecycles.
+/// Base credential rejection closes all clones. Role-session rejection stops only
+/// that role; siblings retain their independently authorized membership. One
+/// connection represents one provider instance with a shared registration generation.
 #[derive(Clone)]
 pub struct ServiceConnection(Arc<ConnectionOwner>);
 
@@ -142,6 +182,7 @@ impl ServiceConnection {
             credential,
             trust: RwLock::new(trust),
             nonces: Mutex::new(HashMap::new()),
+            registration: tokio::sync::Mutex::new(InstanceRegistrationState { request: None }),
             closed: watch::channel(None).0,
         });
         let refresh = tokio::spawn(refresh_trust(shared.clone()));
@@ -149,6 +190,15 @@ impl ServiceConnection {
             shared,
             refresh: Mutex::new(Some(refresh)),
         })))
+    }
+
+    /// A ServiceConnection represents one provider instance; every role shares
+    /// its first registered deployment node identity and incarnation. Serialize
+    /// role bootstrap so later roles join the issued generation, never replace it.
+    pub(crate) async fn registration(
+        &self,
+    ) -> tokio::sync::MutexGuard<'_, InstanceRegistrationState> {
+        self.0.shared.registration.lock().await
     }
 
     pub fn application_id(&self) -> &str {
@@ -199,7 +249,8 @@ impl ServiceConnection {
         }
     }
 
-    pub(crate) fn subscribe_closed(&self) -> watch::Receiver<Option<ServiceAuthError>> {
+    /// Observe shared credential revocation or shutdown without exposing credentials.
+    pub fn subscribe_closed(&self) -> watch::Receiver<Option<ServiceAuthError>> {
         self.0.shared.closed.subscribe()
     }
 
@@ -216,6 +267,36 @@ impl ServiceConnection {
             method,
             path,
         ))
+    }
+
+    #[cfg(feature = "service-http")]
+    pub(crate) fn service_request(
+        &self,
+        method: Method,
+        path: &'static str,
+        token: Option<&str>,
+    ) -> Result<RequestBuilder, ServiceAuthError> {
+        self.ensure_open()?;
+        let url = self
+            .0
+            .shared
+            .base
+            .join(&format!(
+                "{}{}",
+                kish_lingshu_runtime_contract::service::SERVICE_API_PATH,
+                path
+            ))
+            .map_err(|_| ServiceAuthError::InvalidUrl)?;
+        Ok(self
+            .0
+            .shared
+            .client
+            .request(method, url)
+            .bearer_auth(token.unwrap_or_else(|| self.0.shared.credential.expose()))
+            .header(
+                "x-kish-app-id",
+                utf8_percent_encode(self.application_id(), NON_ALPHANUMERIC).to_string(),
+            ))
     }
 
     pub(crate) async fn root_response_json<T: DeserializeOwned>(
@@ -332,14 +413,31 @@ async fn fetch_trust(
     base: &Url,
     credential: &ServiceCredential,
 ) -> Result<ServiceTrust, ServiceAuthError> {
-    let trust: ServiceTrust = response_json(root_request(
-        client,
-        base,
-        credential,
-        Method::GET,
-        "service-auth/trust",
-    ))
-    .await?;
+    // Native trust works when Dispatch is disabled. A missing route alone allows
+    // compatibility with older platforms; authentication errors never downgrade.
+    let native = client
+        .get(
+            base.join("api/user/services/v1/service-auth/trust")
+                .map_err(|_| ServiceAuthError::InvalidUrl)?,
+        )
+        .bearer_auth(credential.expose())
+        .header(
+            "x-kish-app-id",
+            utf8_percent_encode(credential.application_id(), NON_ALPHANUMERIC).to_string(),
+        );
+    let trust: ServiceTrust = match response_json(native).await {
+        Err(ServiceAuthError::Http(404)) => {
+            response_json(root_request(
+                client,
+                base,
+                credential,
+                Method::GET,
+                "service-auth/trust",
+            ))
+            .await?
+        }
+        result => result?,
+    };
     let now = chrono::Utc::now().timestamp();
     if trust.app_id != credential.application_id()
         || trust.expires_at <= now
@@ -478,6 +576,7 @@ mod tests {
                         .collect(),
                 ),
                 closed: watch::channel(None).0,
+                registration: tokio::sync::Mutex::new(InstanceRegistrationState { request: None }),
             }),
             refresh: Mutex::new(None),
         }));

@@ -165,6 +165,71 @@ impl ServiceSigner {
         self.sign(app, "callback", &claims, now, expires_at)
     }
 
+    pub fn sign_service_session<T: Serialize>(
+        &self,
+        app: &str,
+        claims: &T,
+        now: i64,
+    ) -> Result<String, ServiceAuthError> {
+        self.sign(
+            app,
+            "service-instance",
+            claims,
+            now,
+            now.checked_add(SESSION_LIFETIME).ok_or(ServiceAuthError)?,
+        )
+    }
+
+    pub fn verify_service_session<T: DeserializeOwned>(
+        &self,
+        proof: &str,
+        now: i64,
+    ) -> Result<(String, T), ServiceAuthError> {
+        self.verify_service_proof(proof, "service-instance", now, SESSION_LIFETIME)
+    }
+
+    pub fn sign_service_completion<T: Serialize>(
+        &self,
+        app: &str,
+        claims: &T,
+        now: i64,
+        expires_at: i64,
+    ) -> Result<String, ServiceAuthError> {
+        validate_time(now, expires_at, now, 86_460)?;
+        self.sign(app, "service-completion", claims, now, expires_at)
+    }
+
+    pub fn verify_service_completion<T: DeserializeOwned>(
+        &self,
+        proof: &str,
+        now: i64,
+    ) -> Result<(String, T), ServiceAuthError> {
+        self.verify_service_proof(proof, "service-completion", now, 86_460)
+    }
+
+    fn verify_service_proof<T: DeserializeOwned>(
+        &self,
+        proof: &str,
+        purpose: &str,
+        now: i64,
+        lifetime: i64,
+    ) -> Result<(String, T), ServiceAuthError> {
+        let (encoded, signature, envelope): (_, _, Envelope<T>) = decode(proof)?;
+        validate_envelope(&envelope, purpose, now, lifetime)?;
+        let epoch = envelope
+            .key_id
+            .parse::<i64>()
+            .map_err(|_| ServiceAuthError)?;
+        if epoch != envelope.issued_at / EPOCH_SECONDS {
+            return Err(ServiceAuthError);
+        }
+        let key = self.key(&envelope.app_id, epoch, purpose)?;
+        signature::UnparsedPublicKey::new(&signature::ED25519, key.public_key().as_ref())
+            .verify(encoded.as_bytes(), &signature)
+            .map_err(|_| ServiceAuthError)?;
+        Ok((envelope.app_id, envelope.claims))
+    }
+
     pub fn sign_session<T: Serialize>(
         &self,
         app: &str,
@@ -404,5 +469,54 @@ mod tests {
             .is_err());
         assert!(ServiceSigner::new(b"short").is_err());
         assert!(!format!("{:?}", signer).contains("777"));
+    }
+}
+
+#[cfg(test)]
+mod native_service_tests {
+    use super::*;
+    use serde_json::{json, Value};
+    #[test]
+    fn service_proofs_are_scoped_by_purpose_application_and_time() {
+        let signer = ServiceSigner::new(&[71; 32]).unwrap();
+        let other = ServiceSigner::new(&[72; 32]).unwrap();
+        let now = 1_800_000_000;
+        let token = signer
+            .sign_service_session("app-a", &json!({"node":"one","generation":"v1"}), now)
+            .unwrap();
+        let (app, _) = signer
+            .verify_service_session::<Value>(&token, now + 1)
+            .unwrap();
+        assert_eq!(app, "app-a");
+        assert!(signer
+            .verify_service_completion::<Value>(&token, now + 1)
+            .is_err());
+        assert!(signer.verify_session::<Value>(&token, now + 1).is_err());
+        assert!(signer
+            .verify_service_session::<Value>(&token, now + 301)
+            .is_err());
+        assert!(other
+            .verify_service_session::<Value>(&token, now + 1)
+            .is_err());
+        let completion = signer
+            .sign_service_completion(
+                "app-a",
+                &json!({"call":"one","attempt":1}),
+                now,
+                now + 86_400,
+            )
+            .unwrap();
+        assert!(signer
+            .verify_service_completion::<Value>(&completion, now + 86_399)
+            .is_ok());
+        assert!(signer
+            .verify_service_session::<Value>(&completion, now + 1)
+            .is_err());
+        assert!(signer
+            .verify_service_completion::<Value>(&completion, now + 86_461)
+            .is_err());
+        assert!(signer
+            .sign_service_completion("app-a", &json!({}), now, now + 90_000)
+            .is_err());
     }
 }

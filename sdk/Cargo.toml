@@ -51,11 +51,9 @@ user-task-completion = [
   "dep:kish-lingshu-sdk-macros",
   "dep:schemars",
 ]
-user-task-completion-http = [
-  "user-task-completion",
-  "dep:axum",
-  "dep:tokio",
-]
+service-manifest = ["user-task-completion", "dep:inventory", "dep:jsonschema", "dep:schemars", "dep:kish-lingshu-sdk-macros"]
+service-event-http = ["service-http", "event-consumer-http"]
+service-http = ["service-manifest", "service-auth", "dep:axum", "dep:tokio", "dep:reqwest"]
 test-support = ["kish-lingshu-runtime-contract/test-support"]
 
 [dependencies]

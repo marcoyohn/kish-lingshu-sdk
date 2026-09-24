@@ -217,6 +217,8 @@ pub struct ConsumerInstanceRegistrationRequestV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConsumerEnrollmentRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<kish_lingshu_foundation_contract::ServiceInstanceRegistration>,
     pub group_key: String,
     pub node_id: String,
     pub invocation_url: String,
@@ -225,6 +227,8 @@ pub struct ConsumerEnrollmentRequest {
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsumerSession {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<kish_lingshu_foundation_contract::ServiceInstanceIdentity>,
     pub group_id: u64,
     pub group_key: String,
     pub lease: ConsumerInstanceLeaseV1,

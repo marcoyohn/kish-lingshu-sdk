@@ -1,13 +1,17 @@
-error: #[completion_handler] method must have signature async fn(&self, CompletionContext, Submission) -> CompletionResult<Output>
+error: expected async fn(&self, CompletionContext, Input) -> CompletionResult<Output>
   --> tests/ui/completion_non_async.rs:19:5
    |
-19 |     fn complete(
-   |     ^^
+19 | /     fn complete(
+20 | |         &self,
+21 | |         _context: CompletionContext,
+22 | |         _submission: Submission,
+23 | |     ) -> CompletionResult<Output> {
+   | |_________________________________^
 
 warning: unused imports: `CompletionContext` and `CompletionResult`
- --> tests/ui/completion_non_async.rs:2:29
+ --> tests/ui/completion_non_async.rs:3:29
   |
-2 |     user_task::completion::{CompletionContext, CompletionResult},
+3 |     user_task::completion::{CompletionContext, CompletionResult},
   |                             ^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^
   |
   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default

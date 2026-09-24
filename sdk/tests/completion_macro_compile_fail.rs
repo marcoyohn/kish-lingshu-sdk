@@ -1,4 +1,4 @@
-#![cfg(feature = "user-task-completion")]
+#![cfg(feature = "service-manifest")]
 
 #[test]
 fn malformed_completion_handlers_fail_at_compile_time() {

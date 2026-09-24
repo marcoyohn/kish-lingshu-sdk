@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use axum::{
-    extract::{DefaultBodyLimit, FromRef, Json, State},
+    extract::{DefaultBodyLimit, Json, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::post,
@@ -15,7 +15,7 @@ use kish_lingshu_event_dispatch_contract::{
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::{ConsumerError, ConsumerRegistry, EventContext};
+use super::{ConsumerError, ConsumerHttpAdmission, ConsumerRegistry, EventContext};
 
 #[derive(Debug, Clone)]
 pub struct ConsumerHttpConfig {
@@ -33,18 +33,14 @@ impl Default for ConsumerHttpConfig {
 #[derive(Clone)]
 struct ConsumerHttpState {
     registry: Arc<ConsumerRegistry>,
-}
-
-impl FromRef<ConsumerHttpState> for Arc<ConsumerRegistry> {
-    fn from_ref(state: &ConsumerHttpState) -> Self {
-        state.registry.clone()
-    }
+    admission: Option<ConsumerHttpAdmission>,
 }
 
 /// Axum adapter for the synchronous Event Dispatch invocation protocol.
 pub struct ConsumerHttpAdapter {
     registry: Arc<ConsumerRegistry>,
     config: ConsumerHttpConfig,
+    admission: Option<ConsumerHttpAdmission>,
 }
 
 impl ConsumerHttpAdapter {
@@ -52,11 +48,17 @@ impl ConsumerHttpAdapter {
         Self {
             registry,
             config: ConsumerHttpConfig::default(),
+            admission: None,
         }
     }
 
     pub fn with_config(mut self, config: ConsumerHttpConfig) -> Self {
         self.config = config;
+        self
+    }
+
+    pub fn with_admission(mut self, admission: ConsumerHttpAdmission) -> Self {
+        self.admission = Some(admission);
         self
     }
 
@@ -69,15 +71,17 @@ impl ConsumerHttpAdapter {
             .layer(DefaultBodyLimit::max(maximum_request_bytes))
             .with_state(ConsumerHttpState {
                 registry: self.registry,
+                admission: self.admission,
             })
     }
 }
 
 async fn consume_event(
-    State(registry): State<Arc<ConsumerRegistry>>,
+    State(state): State<ConsumerHttpState>,
     headers: HeaderMap,
     invocation: Result<Json<InvocationV1>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
+    let registry = &state.registry;
     let Json(invocation) = match invocation {
         Ok(invocation) => invocation,
         Err(error) => {
@@ -103,7 +107,20 @@ async fn consume_event(
         _ => return deadline_exceeded(),
     };
     let context = EventContext::from_invocation(&invocation);
-    match tokio::time::timeout(timeout, consumer.consume(context, invocation.event.payload)).await {
+    let mut admission = match &state.admission {
+        Some(admission) => match admission.acquire(invocation.consumption.group_key.as_deref()) {
+            Ok(guard) => Some(guard),
+            Err(error) => return consume_error_response(error),
+        },
+        None => None,
+    };
+    let result = tokio::select! {
+        _ = async { admission.as_mut().expect("guarded admission").stopped().await }, if admission.is_some() => {
+            return consume_error_response(ConsumerError::retryable("event_not_ready", "Event membership ended"));
+        },
+        result = tokio::time::timeout(timeout, consumer.consume(context, invocation.event.payload)) => result,
+    };
+    match result {
         Ok(Ok(result)) => Json(json!({ "result": result })).into_response(),
         Ok(Err(error)) => consume_error_response(error),
         Err(_) => deadline_exceeded(),

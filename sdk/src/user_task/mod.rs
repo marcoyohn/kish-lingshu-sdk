@@ -25,9 +25,6 @@ pub use kish_lingshu_runtime_contract::{
     UserTaskTimeRange, UserTaskTimestamps, UserTaskWorkflowReference,
 };
 
-#[cfg(feature = "user-task-completion")]
-pub use kish_lingshu_sdk_macros::{completion_handler, user_task_handlers};
-
 #[derive(Clone)]
 pub struct ApplicationUserTasks {
     pub(crate) inner: Arc<ClientInner>,

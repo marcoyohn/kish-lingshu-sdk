@@ -57,261 +57,14 @@ pub fn event_job(attribute: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn user_task_handlers(attribute: TokenStream, item: TokenStream) -> TokenStream {
-    if !proc_macro2::TokenStream::from(attribute).is_empty() {
-        return Error::new(
-            Span::call_site(),
-            "#[user_task_handlers] does not accept arguments",
-        )
-        .into_compile_error()
-        .into();
-    }
-    let mut implementation = parse_macro_input!(item as ItemImpl);
-    match expand_user_task_handlers(&mut implementation) {
-        Ok(expanded) => expanded.into(),
-        Err(error) => error.into_compile_error().into(),
-    }
-}
-
-#[proc_macro_attribute]
-pub fn completion_handler(_attribute: TokenStream, item: TokenStream) -> TokenStream {
+pub fn user_task_completion_handler(_attribute: TokenStream, item: TokenStream) -> TokenStream {
     let item = proc_macro2::TokenStream::from(item);
-    Error::new(
+    let error = Error::new(
         Span::call_site(),
-        "#[completion_handler] must be used on a method inside #[user_task_handlers]",
+        "user_task_completion_handler must be inside lingshu_service",
     )
-    .into_compile_error()
-    .into_iter()
-    .chain(item)
-    .collect::<proc_macro2::TokenStream>()
-    .into()
-}
-
-fn expand_user_task_handlers(
-    implementation: &mut ItemImpl,
-) -> syn::Result<proc_macro2::TokenStream> {
-    let sdk = sdk_path()?;
-    if implementation.trait_.is_some() {
-        return Err(Error::new_spanned(
-            &implementation.self_ty,
-            "#[user_task_handlers] supports inherent impl blocks only",
-        ));
-    }
-    if !implementation.generics.params.is_empty() || implementation.generics.where_clause.is_some()
-    {
-        return Err(Error::new_spanned(
-            &implementation.generics,
-            "#[user_task_handlers] does not support generic impl blocks",
-        ));
-    }
-
-    let self_ty = implementation.self_ty.clone();
-    let mut registrations = Vec::new();
-    let mut generated_methods: Vec<ImplItem> = Vec::new();
-    for item in &mut implementation.items {
-        let ImplItem::Fn(method) = item else {
-            continue;
-        };
-        let Some((attribute_index, task_type)) = find_completion_handler_attribute(method)? else {
-            continue;
-        };
-        method.attrs.remove(attribute_index);
-        let (submission_type, output_type) = validate_completion_handler_method(method)?;
-        let method_name = &method.sig.ident;
-        let type_id_name = format_ident!("__user_task_handler_type_id_{}", method_name);
-        let type_name_name = format_ident!("__user_task_handler_type_name_{}", method_name);
-        let invoke_name = format_ident!("__user_task_handler_invoke_{}", method_name);
-        let submission_schema_name =
-            format_ident!("__user_task_handler_submission_schema_{}", method_name);
-        let output_schema_name = format_ident!("__user_task_handler_output_schema_{}", method_name);
-
-        generated_methods.push(syn::parse2(quote! {
-            #[doc(hidden)]
-            fn #type_id_name() -> ::std::any::TypeId {
-                ::std::any::TypeId::of::<#self_ty>()
-            }
-        })?);
-        generated_methods.push(syn::parse2(quote! {
-            #[doc(hidden)]
-            fn #type_name_name() -> &'static str {
-                ::std::any::type_name::<#self_ty>()
-            }
-        })?);
-        generated_methods.push(syn::parse2(quote! {
-            #[doc(hidden)]
-            fn #submission_schema_name(
-            ) -> ::std::result::Result<#sdk::user_task::completion::__private::serde_json::Value, ::std::string::String> {
-                let schema = #sdk::user_task::completion::__private::schemars::schema_for!(#submission_type);
-                #sdk::user_task::completion::__private::serde_json::to_value(schema)
-                    .map_err(|error| error.to_string())
-            }
-        })?);
-        generated_methods.push(syn::parse2(quote! {
-            #[doc(hidden)]
-            fn #output_schema_name(
-            ) -> ::std::result::Result<#sdk::user_task::completion::__private::serde_json::Value, ::std::string::String> {
-                let schema = #sdk::user_task::completion::__private::schemars::schema_for!(#output_type);
-                #sdk::user_task::completion::__private::serde_json::to_value(schema)
-                    .map_err(|error| error.to_string())
-            }
-        })?);
-        generated_methods.push(syn::parse2(quote! {
-            #[doc(hidden)]
-            fn #invoke_name(
-                instance: ::std::sync::Arc<dyn ::std::any::Any + Send + Sync>,
-                context: #sdk::user_task::completion::CompletionContext,
-                payload: #sdk::user_task::completion::__private::serde_json::Value,
-            ) -> #sdk::user_task::completion::__private::CompletionHandlerFuture {
-                ::std::boxed::Box::pin(async move {
-                    let handler = ::std::sync::Arc::downcast::<#self_ty>(instance)
-                        .expect("User Task completion Registry validated the Handler binding type");
-                    let submission: #submission_type =
-                        #sdk::user_task::completion::__private::serde_json::from_value(payload)
-                            .map_err(|error| #sdk::user_task::completion::CompletionError::rejected(
-                                "invalid_submission",
-                                ::std::format!("invalid User Task submission: {error}"),
-                            ))?;
-                    let output = handler.#method_name(context, submission).await?;
-                    #sdk::user_task::completion::__private::serde_json::to_value(output)
-                        .map_err(|error| #sdk::user_task::completion::CompletionError::failed(
-                            "completion_output_serialization_failed",
-                            ::std::format!("failed to serialize User Task completion output: {error}"),
-                        ))
-                })
-            }
-        })?);
-        registrations.push(quote! {
-            #sdk::user_task::completion::__private::inventory::submit! {
-                #sdk::user_task::completion::__private::CompletionHandlerDescriptor {
-                    task_type: #task_type,
-                    handler_type_id: <#self_ty>::#type_id_name,
-                    handler_type_name: <#self_ty>::#type_name_name,
-                    diagnostic_name: ::std::concat!(
-                        ::std::module_path!(),
-                        "::",
-                        ::std::stringify!(#self_ty),
-                        "::",
-                        ::std::stringify!(#method_name)
-                    ),
-                    submission_schema: <#self_ty>::#submission_schema_name,
-                    output_schema: <#self_ty>::#output_schema_name,
-                    invoke: <#self_ty>::#invoke_name,
-                }
-            }
-        });
-    }
-    if registrations.is_empty() {
-        return Err(Error::new_spanned(
-            &implementation.self_ty,
-            "#[user_task_handlers] requires at least one #[completion_handler] method",
-        ));
-    }
-    implementation.items.extend(generated_methods);
-    Ok(quote! {
-        #implementation
-        #(#registrations)*
-    })
-}
-
-fn find_completion_handler_attribute(method: &ImplItemFn) -> syn::Result<Option<(usize, LitStr)>> {
-    let matches = method
-        .attrs
-        .iter()
-        .enumerate()
-        .filter(|(_, attribute)| {
-            attribute
-                .path()
-                .segments
-                .last()
-                .is_some_and(|segment| segment.ident == "completion_handler")
-        })
-        .collect::<Vec<_>>();
-    if matches.len() > 1 {
-        return Err(Error::new_spanned(
-            &method.sig.ident,
-            "duplicate #[completion_handler] attribute",
-        ));
-    }
-    let Some((index, attribute)) = matches.into_iter().next() else {
-        return Ok(None);
-    };
-    let mut task_type = None;
-    attribute.parse_nested_meta(|meta| {
-        if meta.path.is_ident("task_type") {
-            set_once(&mut task_type, meta.value()?.parse()?, &meta, "task_type")
-        } else {
-            Err(meta.error("unknown completion_handler argument"))
-        }
-    })?;
-    let task_type: LitStr =
-        task_type.ok_or_else(|| Error::new_spanned(attribute, "missing task_type"))?;
-    if task_type.value().is_empty()
-        || task_type.value().len() > 255
-        || !task_type
-            .value()
-            .bytes()
-            .all(|byte| (0x21..=0x7e).contains(&byte))
-    {
-        return Err(Error::new_spanned(
-            task_type,
-            "task_type must be 1..=255 visible ASCII bytes",
-        ));
-    }
-    Ok(Some((index, task_type)))
-}
-
-fn validate_completion_handler_method(method: &ImplItemFn) -> syn::Result<(Type, Type)> {
-    let signature = "#[completion_handler] method must have signature async fn(&self, CompletionContext, Submission) -> CompletionResult<Output>";
-    if method.sig.asyncness.is_none() {
-        return Err(Error::new_spanned(method.sig.fn_token, signature));
-    }
-    if !method.sig.generics.params.is_empty() || method.sig.generics.where_clause.is_some() {
-        return Err(Error::new_spanned(&method.sig.generics, signature));
-    }
-    if method.sig.inputs.len() != 3 {
-        return Err(Error::new_spanned(&method.sig.inputs, signature));
-    }
-    match method.sig.inputs.first() {
-        Some(FnArg::Receiver(receiver))
-            if receiver.reference.is_some()
-                && receiver.mutability.is_none()
-                && receiver.colon_token.is_none() => {}
-        _ => return Err(Error::new_spanned(&method.sig.inputs, signature)),
-    }
-    match method.sig.inputs.iter().nth(1) {
-        Some(FnArg::Typed(argument)) if type_ends_with(&argument.ty, "CompletionContext") => {}
-        Some(argument) => return Err(Error::new_spanned(argument, signature)),
-        None => unreachable!(),
-    }
-    let submission_type = match method.sig.inputs.iter().nth(2) {
-        Some(FnArg::Typed(argument)) => (*argument.ty).clone(),
-        Some(argument) => return Err(Error::new_spanned(argument, signature)),
-        None => unreachable!(),
-    };
-    let ReturnType::Type(_, output) = &method.sig.output else {
-        return Err(Error::new_spanned(&method.sig.output, signature));
-    };
-    let Type::Path(path) = output.as_ref() else {
-        return Err(Error::new_spanned(output, signature));
-    };
-    let Some(segment) = path.path.segments.last() else {
-        return Err(Error::new_spanned(output, signature));
-    };
-    let PathArguments::AngleBracketed(arguments) = &segment.arguments else {
-        return Err(Error::new_spanned(output, signature));
-    };
-    let types = arguments
-        .args
-        .iter()
-        .filter_map(|argument| match argument {
-            GenericArgument::Type(ty) => Some(ty.clone()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    if segment.ident != "CompletionResult" || types.len() != 1 {
-        return Err(Error::new_spanned(output, signature));
-    }
-    Ok((submission_type, types.into_iter().next().unwrap()))
+    .into_compile_error();
+    quote!(#error #item).into()
 }
 
 struct EventArgs {
@@ -1177,4 +930,35 @@ fn string_literal(expression: &Expr) -> syn::Result<&LitStr> {
         }) => Ok(value),
         _ => Err(Error::new_spanned(expression, "expected string literal")),
     }
+}
+
+mod service;
+
+#[proc_macro_attribute]
+pub fn lingshu_service(attribute: TokenStream, item: TokenStream) -> TokenStream {
+    let implementation = parse_macro_input!(item as ItemImpl);
+    match service::expand(attribute.into(), implementation) {
+        Ok(expanded) => expanded.into(),
+        Err(error) => error.into_compile_error().into(),
+    }
+}
+
+#[proc_macro_attribute]
+pub fn service_call(_attribute: TokenStream, _item: TokenStream) -> TokenStream {
+    Error::new(
+        Span::call_site(),
+        "service_call must be inside lingshu_service",
+    )
+    .into_compile_error()
+    .into()
+}
+
+#[proc_macro_attribute]
+pub fn service_event(_attribute: TokenStream, _item: TokenStream) -> TokenStream {
+    Error::new(
+        Span::call_site(),
+        "service_event must be inside lingshu_service",
+    )
+    .into_compile_error()
+    .into()
 }

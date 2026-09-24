@@ -15,6 +15,24 @@ use thiserror::Error;
 #[cfg(feature = "service-auth")]
 pub mod service_auth;
 
+/// A stable deployment instance and one SDK connection incarnation. This is
+/// registration metadata, never a credential or a business idempotency key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceInstanceRegistration {
+    pub instance_id: String,
+    pub incarnation_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceInstanceIdentity {
+    pub instance_id: String,
+    pub generation: String,
+}
+
 macro_rules! string_identity {
     ($name:ident) => {
         #[derive(

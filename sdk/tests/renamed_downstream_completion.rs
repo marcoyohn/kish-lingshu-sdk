@@ -1,4 +1,4 @@
-#![cfg(feature = "user-task-completion")]
+#![cfg(feature = "service-manifest")]
 
 use std::{fs, process::Command};
 
@@ -15,7 +15,7 @@ edition = "2021"
 [workspace]
 
 [dependencies]
-lingshu = {{ package = "kish-lingshu-sdk", path = {sdk_path:?}, default-features = false, features = ["user-task-completion"] }}
+lingshu = {{ package = "kish-lingshu-sdk", path = {sdk_path:?}, default-features = false, features = ["service-manifest"] }}
 schemars = "1.2"
 serde = {{ version = "1", features = ["derive"] }}
 "#,
@@ -29,8 +29,7 @@ serde = {{ version = "1", features = ["derive"] }}
 use std::sync::Arc;
 
 use lingshu::user_task::completion::{
-    CompletionContext, CompletionProducerMetadata, CompletionRegistry, CompletionResult,
-    CompletionSourceCatalog,
+    CompletionContext, CompletionResult,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -43,9 +42,9 @@ struct Output { applied: bool }
 
 struct Handlers;
 
-#[lingshu::user_task_handlers]
+#[lingshu::lingshu_service(key="reviews")]
 impl Handlers {
-    #[completion_handler(task_type = "fixture.approval.v1")]
+    #[user_task_completion_handler(task_type = "fixture.approval.v1", operation="complete", version="v1", modes=["sync","async"], idempotent=true)]
     async fn complete(
         &self,
         _context: CompletionContext,
@@ -56,19 +55,11 @@ impl Handlers {
 }
 
 fn main() {
-    let mut builder = CompletionRegistry::builder("fixture-app").unwrap();
-    builder.bind(Arc::new(Handlers)).unwrap();
-    let registry = builder.build().unwrap();
-    assert_eq!(registry.application_id(), "fixture-app");
-
-    let contract = CompletionSourceCatalog::collect()
-        .unwrap()
-        .contract(CompletionProducerMetadata {
-            package_name: "renamed-completion-sdk".into(),
-            package_version: "0.1.0".into(),
-        })
-        .unwrap();
-    assert_eq!(contract.handlers[0].task_type, "fixture.approval.v1");
+    let manifest = lingshu::services::export_manifest("fixture-app").unwrap();
+    assert_eq!(manifest.services[0].operations[0].user_task_completion.as_ref().unwrap().task_type, "fixture.approval.v1");
+    let mut builder = lingshu::services::ServiceRegistryBuilder::new(manifest).unwrap();
+    Arc::new(Handlers).bind_lingshu_services(&mut builder).unwrap();
+    assert_eq!(builder.build().unwrap().capabilities().len(), 1);
 }
 "#,
     )

@@ -42,6 +42,7 @@ struct Control {
     heartbeats: AtomicUsize,
     deregistrations: AtomicUsize,
     sessions: Mutex<HashMap<String, ConsumerSession>>,
+    registrations: Mutex<Vec<kish_lingshu_foundation_contract::ServiceInstanceRegistration>>,
 }
 
 impl Control {
@@ -96,7 +97,18 @@ async fn enroll(
     if control.mode.load(Ordering::SeqCst) == 27 {
         return (StatusCode::UNAUTHORIZED, ROOT_KEY).into_response();
     }
+    control
+        .registrations
+        .lock()
+        .unwrap()
+        .push(input.instance.clone().expect("shared registration"));
     let session = ConsumerSession {
+        instance: input.instance.map(|r| {
+            kish_lingshu_foundation_contract::ServiceInstanceIdentity {
+                instance_id: r.instance_id,
+                generation: r.generation.unwrap_or_else(|| "shared-generation".into()),
+            }
+        }),
         group_id: 17,
         group_key: input.group_key,
         lease: ConsumerInstanceLeaseV1 {
@@ -169,6 +181,8 @@ async fn heartbeat(
         }
         9 if count == 1 => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
         10 => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        11 => session.instance.as_mut().unwrap().generation = "replacement".into(),
+        12 => session.instance = None,
         _ => {}
     }
     session.credential = format!(
@@ -561,6 +575,19 @@ async fn replicas_renew_independently_rotate_credentials_and_deregister_latest_s
         first.status().lease().member_id,
         second.status().lease().member_id
     );
+    {
+        let registrations = server.control.registrations.lock().unwrap();
+        assert_eq!(registrations[0].instance_id, registrations[1].instance_id);
+        assert_eq!(
+            registrations[0].incarnation_id,
+            registrations[1].incarnation_id
+        );
+        assert!(registrations[0].generation.is_none());
+        assert_eq!(
+            registrations[1].generation.as_deref(),
+            Some("shared-generation")
+        );
+    }
     wait_count(&server.control.heartbeats, 4).await;
     first.shutdown().await;
     second.shutdown().await;
@@ -571,7 +598,7 @@ async fn replicas_renew_independently_rotate_credentials_and_deregister_latest_s
 #[tokio::test]
 async fn heartbeat_rejects_every_identity_mismatch_and_never_reenrolls() {
     let mut tests = tokio::task::JoinSet::new();
-    for mode in 1..=7 {
+    for mode in (1..=7).chain([11, 12]) {
         tests.spawn(async move {
             let server = Server::start(mode).await;
             let connection = server.connect().await.unwrap();
@@ -582,7 +609,7 @@ async fn heartbeat_rejects_every_identity_mismatch_and_never_reenrolls() {
                     status,
                     EnrolledConsumerNodeStatus::CredentialRejected { .. }
                 )),
-                2 | 3 | 6 | 7 => {
+                2 | 3 | 6 | 7 | 11 | 12 => {
                     assert!(matches!(status, EnrolledConsumerNodeStatus::Fenced { .. }))
                 }
                 4 | 5 => assert!(matches!(
@@ -687,12 +714,12 @@ async fn transient_failure_recovers_without_reenrollment() {
     assert_eq!(server.control.deregistrations.load(Ordering::SeqCst), 1);
 }
 
-#[cfg(all(feature = "event-consumer-http", feature = "user-task-completion-http"))]
+#[cfg(all(feature = "event-consumer-http", feature = "service-http"))]
 #[tokio::test]
 async fn protects_existing_event_and_task_adapters_before_json_handling() {
     use kish_lingshu_sdk::{
         event_dispatch::{ConsumerHttpAdapter, ConsumerRegistry},
-        user_task::completion::{CompletionHttpAdapter, CompletionRegistry},
+        services::{ServiceHttpAdapter, ServiceManifest, ServiceRegistryBuilder},
     };
     let server = Server::start(0).await;
     let connection = server.connect().await.unwrap();
@@ -700,22 +727,38 @@ async fn protects_existing_event_and_task_adapters_before_json_handling() {
         ConsumerRegistry::builder(APP).unwrap().build().unwrap(),
     ))
     .router();
-    let task = CompletionHttpAdapter::new(Arc::new(
-        CompletionRegistry::builder(APP).unwrap().build().unwrap(),
-    ))
-    .router();
-    for (router, path) in [
-        (
+    let manifest: ServiceManifest = serde_json::from_value(serde_json::json!({
+        "contract_version": 1,
+        "application_id": APP,
+        "services": [{"service_key":"reviews", "description":"", "operations":[{
+            "operation_key":"complete", "version":"v1", "description":"", "action":"",
+            "idempotent":true, "input_schema":{}, "output_schema":{}, "error_schema":{},
+            "user_task_completion":{"task_type":"review"},
+            "call":{"modes":["sync","async"],"maximum_concurrency":2,"timeout_ms":30000},
+            "events":[]
+        }]}]
+    }))
+    .unwrap();
+    let mut registry = ServiceRegistryBuilder::new(manifest).unwrap();
+    registry
+        .bind(
+            "reviews",
+            "complete",
+            "v1",
+            |_, input: serde_json::Value| async move { Ok(input) },
+        )
+        .unwrap();
+    let task = ServiceHttpAdapter::new(Arc::new(registry.build().unwrap()), connection.clone(), 2)
+        .unwrap();
+    let task_router = task.router("https://callback.example/").unwrap();
+    let event_router = connection
+        .protect(
             Router::new().nest("/internal/events", event),
-            "/internal/events",
-        ),
-        (
-            task,
-            kish_lingshu_runtime_contract::USER_TASK_COMPLETION_PATH,
-        ),
-    ] {
+            "https://callback.example/internal/events",
+        )
+        .unwrap();
+    for (router, path) in [(event_router, "/internal/events"), (task_router, "/")] {
         let target = format!("https://callback.example{path}");
-        let router = connection.protect(router, &target).unwrap();
         assert_eq!(
             router
                 .clone()
@@ -730,10 +773,11 @@ async fn protects_existing_event_and_task_adapters_before_json_handling() {
             .signer()
             .sign_callback(APP, "POST", &target, b"not-json", Utc::now().timestamp())
             .unwrap();
-        let response = router
-            .oneshot(callback(Some(&proof), path, b"not-json"))
-            .await
-            .unwrap();
+        let mut request = callback(Some(&proof), path, b"not-json");
+        request
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+        let response = router.oneshot(request).await.unwrap();
         assert_eq!(
             response.status(),
             StatusCode::BAD_REQUEST,

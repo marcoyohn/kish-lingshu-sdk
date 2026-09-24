@@ -16,6 +16,7 @@ mod ports;
 mod problem;
 mod request;
 mod result_projection;
+pub mod service;
 mod suspension;
 pub mod user_context;
 mod user_task;

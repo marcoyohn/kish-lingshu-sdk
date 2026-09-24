@@ -653,7 +653,7 @@ fn completion_test_task(mut task: UserTask, id: u64) -> UserTask {
         ..Default::default()
     };
     task.completion = Some(UserTaskCompletionDetail {
-        binding_key: "default".to_string(),
+        handler: serde_json::from_value(serde_json::json!({"service_key":"review","operation_key":"complete","version":"v1","contract_digest":"a".repeat(64)})).unwrap(),
         problem: None,
         execution: None,
     });
@@ -670,14 +670,15 @@ fn stage_test_completion(task: &mut UserTask, submission: serde_json::Value) {
     task.permissions = UserTaskPermissions::default();
     let command_id = task.summary.id.get() + 10_000;
     task.completion = Some(UserTaskCompletionDetail {
-        binding_key: "default".to_string(),
+        handler: serde_json::from_value(serde_json::json!({"service_key":"review","operation_key":"complete","version":"v1","contract_digest":"a".repeat(64)})).unwrap(),
         problem: None,
         execution: Some(UserTaskCompletionExecution {
             command_id,
             invocation_id: format!("user-task-completion/{command_id}"),
             state: "effect_pending".to_string(),
             outcome: None,
-            binding_key: "default".to_string(),
+            version: "v1".into(),
+            contract_digest: "a".repeat(64),
             service_key: "kishee-ykm".to_string(),
             operation_key: "user-task.complete.v1".to_string(),
             attempt_count: 1,

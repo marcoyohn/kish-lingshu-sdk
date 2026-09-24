@@ -1,6 +1,6 @@
 use kish_lingshu_sdk::{
+    lingshu_service,
     user_task::completion::{CompletionContext, CompletionResult},
-    user_task_handlers,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -13,9 +13,9 @@ struct Output;
 
 struct Handlers;
 
-#[user_task_handlers]
+#[lingshu_service(key = "reviews")]
 impl Handlers {
-    #[completion_handler(task_type = "approval.invalid.v1")]
+    #[user_task_completion_handler(task_type = "approval.invalid.v1", operation="complete", version="v1", modes=["sync"])]
     fn complete(
         &self,
         _context: CompletionContext,

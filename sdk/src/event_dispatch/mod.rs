@@ -16,7 +16,11 @@ pub use enrolled_node::{
 #[cfg(feature = "event-consumer")]
 mod consumer;
 #[cfg(feature = "event-consumer-http")]
+mod consumer_admission;
+#[cfg(feature = "event-consumer-http")]
 mod consumer_http;
+#[cfg(feature = "event-consumer-http")]
+pub use consumer_admission::ConsumerHttpAdmission;
 #[cfg(feature = "event-consumer-http")]
 mod consumer_node;
 #[cfg(feature = "event-manifest")]

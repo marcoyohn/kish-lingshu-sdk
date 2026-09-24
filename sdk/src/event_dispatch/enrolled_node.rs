@@ -77,6 +77,7 @@ impl EnrolledConsumerNodeStatus {
 /// Owns the automatic heartbeat loop. Drop cancels renewal and attempts a
 /// bounded, generation-fenced deregistration; shutdown additionally joins it.
 pub struct EnrolledConsumerNode {
+    group_key: String,
     cancel: watch::Sender<bool>,
     status: watch::Receiver<EnrolledConsumerNodeStatus>,
     task: Option<JoinHandle<()>>,
@@ -106,12 +107,15 @@ impl EnrolledConsumerNode {
         config: EnrolledConsumerNodeConfig,
     ) -> Result<Self, ServiceAuthError> {
         validate_config(&config)?;
+        let mut registration = connection.registration().await;
+        let instance = registration.request(&config.node_id);
         let started = Instant::now();
         let session: ConsumerSession = connection
             .root_response_json(
                 connection
                     .root_request(reqwest::Method::POST, "consumer-enrollments")?
                     .json(&ConsumerEnrollmentRequest {
+                        instance: Some(instance),
                         group_key: config.group_key.clone(),
                         node_id: config.node_id.clone(),
                         invocation_url: callback_url(&config.invocation_url)?.to_string(),
@@ -120,15 +124,19 @@ impl EnrolledConsumerNode {
             )
             .await?;
         validate_session(&session, &config, None)?;
+        registration.accept(session.instance.as_ref())?;
+        drop(registration);
         let deadline = lease_deadline(&session, started)?;
         let (status_tx, status) = watch::channel(EnrolledConsumerNodeStatus::Registered {
             lease: session.lease.clone(),
         });
         let (cancel, cancel_rx) = watch::channel(false);
+        let group_key = config.group_key.clone();
         let task = tokio::spawn(renew(
             connection, config, session, deadline, status_tx, cancel_rx,
         ));
         Ok(Self {
+            group_key,
             cancel,
             status,
             task: Some(task),
@@ -137,6 +145,10 @@ impl EnrolledConsumerNode {
 
     pub fn status(&self) -> EnrolledConsumerNodeStatus {
         self.status.borrow().clone()
+    }
+
+    pub fn group_key(&self) -> &str {
+        &self.group_key
     }
 
     pub fn subscribe(&self) -> watch::Receiver<EnrolledConsumerNodeStatus> {
@@ -199,7 +211,8 @@ fn validate_session(
         return Err(ServiceAuthError::InvalidResponse);
     }
     if let Some(previous) = previous {
-        if session.group_id != previous.group_id
+        if session.instance != previous.instance
+            || session.group_id != previous.group_id
             || lease.member_id != previous.lease.member_id
             || lease.membership_generation != previous.lease.membership_generation
         {
@@ -301,14 +314,14 @@ async fn renew(
                     lease: session.lease.clone(),
                 });
             }
-            Err(error @ ServiceAuthError::Http(401 | 403)) => {
+            Err(error @ ServiceAuthError::Http(401)) => {
                 connection.reject_authentication(error);
                 status.send_replace(EnrolledConsumerNodeStatus::CredentialRejected {
                     lease: session.lease,
                 });
                 return;
             }
-            Err(ServiceAuthError::Http(409)) => {
+            Err(ServiceAuthError::Http(403 | 404 | 409)) => {
                 status.send_replace(EnrolledConsumerNodeStatus::Fenced {
                     lease: session.lease,
                 });
