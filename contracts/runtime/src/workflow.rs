@@ -448,6 +448,13 @@ pub struct WorkflowRunHandle {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WorkflowRunResult {
+    /// The observation budget expired; execution continues independently.
+    Pending {
+        run: WorkflowRunHandle,
+        last_state: WorkflowState,
+        /// Replay after this cursor, which never splits a detail/state pair.
+        cursor: EventCursor,
+    },
     Completed {
         run: WorkflowRunHandle,
         output: Value,
@@ -468,7 +475,8 @@ pub enum WorkflowRunResult {
 impl WorkflowRunResult {
     pub fn run(&self) -> &WorkflowRunHandle {
         match self {
-            Self::Completed { run, .. }
+            Self::Pending { run, .. }
+            | Self::Completed { run, .. }
             | Self::Failed { run, .. }
             | Self::Suspended { run, .. }
             | Self::Terminated { run } => run,
@@ -477,11 +485,47 @@ impl WorkflowRunResult {
 
     pub fn state(&self) -> WorkflowState {
         match self {
+            Self::Pending { .. } => WorkflowState::Pending,
             Self::Completed { .. } => WorkflowState::Completed,
             Self::Failed { .. } => WorkflowState::Failed,
             Self::Suspended { .. } => WorkflowState::Suspended,
             Self::Terminated { .. } => WorkflowState::Terminated,
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowWaitMode {
+    #[default]
+    UntilAction,
+    Boundary,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WorkflowWaitOptions {
+    pub timeout_ms: u64,
+    pub mode: WorkflowWaitMode,
+}
+
+impl Default for WorkflowWaitOptions {
+    fn default() -> Self {
+        Self {
+            timeout_ms: 30_000,
+            mode: WorkflowWaitMode::UntilAction,
+        }
+    }
+}
+
+impl WorkflowWaitOptions {
+    pub fn validate(&self) -> RuntimeResult<()> {
+        if !(1..=300_000).contains(&self.timeout_ms) {
+            return Err(RuntimeError::invalid_request(
+                "Workflow wait timeout must be between 1 and 300000 ms",
+            ));
+        }
+        Ok(())
     }
 }
 

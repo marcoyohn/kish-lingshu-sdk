@@ -266,10 +266,10 @@ async fn service_http_sync_async_capacity_fencing_and_automatic_reporting_withou
         send(&router, &p, &target, &asynchronous).await.status(),
         StatusCode::ACCEPTED
     );
-    assert_eq!(
-        send(&router, &p, &target, &sync).await.status(),
-        StatusCode::TOO_MANY_REQUESTS
-    );
+    let rejected = send(&router, &p, &target, &sync).await;
+    assert_eq!(rejected.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(rejected.headers()["x-lingshu-submission-rejected"], "true");
+    assert_eq!(rejected.headers()["retry-after"], "1");
     let mut stale = sync.clone();
     stale.target_instance.as_mut().unwrap().generation = "old".into();
     assert_eq!(
@@ -312,7 +312,25 @@ async fn service_http_sync_async_capacity_fencing_and_automatic_reporting_withou
     assert!(
         matches!(result,InvocationResponse::Completed{outcome:ServiceOutcome::Failed{error}} if error.code=="handler_panicked")
     );
-    registration.shutdown().await;
+    let before_shutdown = calls.load(Ordering::SeqCst);
+    let pending = invocation(&registry, CallMode::Sync, json!({"hold":true}));
+    let (stopped, ()) = tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::join!(send(&router, &p, &target, &pending), async {
+            while calls.load(Ordering::SeqCst) == before_shutdown {
+                tokio::task::yield_now().await;
+            }
+            registration.shutdown().await;
+        })
+    })
+    .await
+    .unwrap();
+    assert_eq!(stopped.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(!stopped
+        .headers()
+        .contains_key("x-lingshu-submission-rejected"));
+    let stopped: ServiceError =
+        serde_json::from_slice(&to_bytes(stopped.into_body(), 4096).await.unwrap()).unwrap();
+    assert_eq!(stopped.code, "outcome_unknown");
     assert!(!adapter.status().accepting);
     assert_eq!(
         send(&router, &p, &target, &sync).await.status(),

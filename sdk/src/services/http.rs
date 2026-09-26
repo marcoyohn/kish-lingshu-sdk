@@ -287,7 +287,21 @@ impl Drop for ActiveGuard {
 }
 
 fn rejection(status: StatusCode, error: ServiceError) -> Response {
-    (status, Json(error)).into_response()
+    let mut response = (status, Json(error)).into_response();
+    // This helper is used only before handler acceptance. Gateways must preserve
+    // this evidence; a bare proxy 503 cannot prove that work never started.
+    if matches!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
+    ) {
+        response
+            .headers_mut()
+            .insert("x-lingshu-submission-rejected", "true".parse().unwrap());
+        response
+            .headers_mut()
+            .insert("retry-after", "1".parse().unwrap());
+    }
+    response
 }
 async fn canceled(receiver: &mut watch::Receiver<bool>) {
     loop {
@@ -443,7 +457,7 @@ async fn invoke(
             let status = match error.code.as_str() {
                 "invalid_admission" => StatusCode::UNPROCESSABLE_ENTITY,
                 "stale_governance" => StatusCode::CONFLICT,
-                _ => StatusCode::TOO_MANY_REQUESTS,
+                _ => StatusCode::SERVICE_UNAVAILABLE,
             };
             return rejection(status, error);
         }
@@ -554,13 +568,16 @@ async fn invoke(
     } else {
         match execution.await {
             Some(outcome) => Json(InvocationResponse::Completed { outcome }).into_response(),
-            None => rejection(
+            // Execution may have committed effects before shutdown. Do not mark
+            // this as a pre-acceptance rejection or encourage submission replay.
+            None => (
                 StatusCode::SERVICE_UNAVAILABLE,
-                ServiceError::retryable(
-                    "service_stopping",
+                Json(ServiceError::retryable(
+                    "outcome_unknown",
                     "Service stopped before returning its result",
-                ),
-            ),
+                )),
+            )
+                .into_response(),
         }
     }
 }

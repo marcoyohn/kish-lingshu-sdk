@@ -293,7 +293,7 @@ fn every_canonical_event_fixture_round_trips_flat() {
 fn synchronous_result_fixtures_enforce_state_payloads() {
     let fixtures: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/run_results.json")).unwrap();
-    for name in ["completed", "failed", "suspended", "terminated"] {
+    for name in ["pending", "completed", "failed", "suspended", "terminated"] {
         let fixture = fixtures[name].clone();
         let result: WorkflowRunResult = serde_json::from_value(fixture.clone()).unwrap();
         assert_eq!(serde_json::to_value(result).unwrap(), fixture, "{name}");

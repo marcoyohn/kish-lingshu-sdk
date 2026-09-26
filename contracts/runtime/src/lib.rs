@@ -3,6 +3,8 @@
 //! This crate deliberately contains no database, HTTP, ACP, or presentation
 //! dependencies. Runtime implementations live in higher-level crates.
 
+pub mod admission;
+pub mod retry;
 mod authorization;
 mod catalog;
 mod client;

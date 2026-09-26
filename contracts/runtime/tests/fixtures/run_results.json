@@ -1,4 +1,8 @@
 {
+  "pending": {
+    "run": {"workflow_id":42,"workflow_instance_id":9005,"root_workflow_instance_id":9005,"subscription_anchor":"run-9005:0"},
+    "state":"pending", "last_state":"suspended", "cursor":"run-9005:2"
+  },
   "completed": {
     "run": {
       "workflow_id": 42,
@@ -33,6 +37,7 @@
     "state": "suspended",
     "suspension": {
       "handle": "v1.result-fixture",
+      "kind": "external",
       "reason": "awaiting_approval",
       "payload": { "action": "publish" }
     }

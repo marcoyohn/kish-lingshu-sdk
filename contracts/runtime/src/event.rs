@@ -112,9 +112,28 @@ pub struct PlanItem {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct SuspensionEvent {
     pub handle: SuspensionHandle,
+    /// Missing classification from older publishers requires caller intervention.
+    #[serde(default)]
+    pub kind: SuspensionKind,
     pub reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<Value>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuspensionKind {
+    #[default]
+    External,
+    Admission,
+    Retry,
+    Service,
+}
+
+impl SuspensionKind {
+    pub fn is_automatic(self) -> bool {
+        !matches!(self, Self::External)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

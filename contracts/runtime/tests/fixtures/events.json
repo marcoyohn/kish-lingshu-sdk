@@ -92,7 +92,7 @@
     "execution_id": 7001,
     "timestamp": "2026-09-06T10:20:37+08:00",
     "type": "suspension",
-    "data": { "handle": "v1.fixture", "reason": "awaiting_input", "payload": { "field": "approval" } }
+    "data": { "handle": "v1.fixture", "kind": "external", "reason": "awaiting_input", "payload": { "field": "approval" } }
   },
   {
     "event_id": "evt-9",

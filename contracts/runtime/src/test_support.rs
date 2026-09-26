@@ -630,6 +630,7 @@ struct ContractRun {
     events: Vec<WorkflowEvent>,
     next_sequence: u64,
     oldest_sequence: u64,
+    keep_subscription_open: bool,
 }
 
 impl ContractWorkflowRuntime {
@@ -925,6 +926,7 @@ impl WorkflowRuntime for ContractWorkflowRuntime {
             events: Vec::new(),
             next_sequence: 0,
             oldest_sequence: 1,
+            keep_subscription_open: false,
         };
         Self::push_event(
             &mut run,
@@ -1120,7 +1122,9 @@ impl WorkflowRuntime for ContractWorkflowRuntime {
                 );
                 return Ok(accepted(request.workflow_instance_id, cursor));
             }
-            WorkflowSignal::Business { name, payload } if name == "contract_suspend" => {
+            WorkflowSignal::Business { name, payload }
+                if name == "contract_suspend" || name == "contract_auto_suspend" =>
+            {
                 let handle = SuspensionHandle::issue(format!(
                     "contract-{}-{}",
                     request.workflow_instance_id.0,
@@ -1132,6 +1136,11 @@ impl WorkflowRuntime for ContractWorkflowRuntime {
                     run,
                     request.workflow_instance_id,
                     WorkflowEventKind::Suspension(SuspensionEvent {
+                        kind: if name == "contract_auto_suspend" {
+                            SuspensionKind::Admission
+                        } else {
+                            SuspensionKind::External
+                        },
                         handle,
                         reason: "contract suspension".to_string(),
                         payload: Some(payload),
@@ -1146,6 +1155,17 @@ impl WorkflowRuntime for ContractWorkflowRuntime {
                     }),
                 );
                 return Ok(accepted(request.workflow_instance_id, cursor));
+            }
+            WorkflowSignal::Business { name, payload } if name == "contract_partial_output" => {
+                run.keep_subscription_open = true;
+                WorkflowEventKind::Output(payload)
+            }
+            WorkflowSignal::Business { name, payload } if name == "contract_observation_open" => {
+                run.keep_subscription_open = true;
+                WorkflowEventKind::Extension {
+                    kind: name,
+                    payload,
+                }
             }
             signal => WorkflowEventKind::Extension {
                 kind: "contract_signal".to_string(),
@@ -1240,7 +1260,11 @@ impl WorkflowRuntime for ContractWorkflowRuntime {
             .cloned()
             .map(Ok)
             .collect::<Vec<_>>();
-        Ok(Box::pin(stream::iter(events)))
+        if run.keep_subscription_open && !run.state.is_terminal() {
+            Ok(Box::pin(stream::iter(events).chain(stream::pending())))
+        } else {
+            Ok(Box::pin(stream::iter(events)))
+        }
     }
 }
 

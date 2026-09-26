@@ -22,9 +22,10 @@ pub use kish_lingshu_runtime_contract::{
     ConversationToolResponse, EventCursor, EventId, ExecutionId, ExecutionStateEvent, FailureEvent,
     MessageEvent, MessageId, MessagePhase, PermissionDecision, PermissionRequestEvent, PlanEvent,
     PlanId, PlanItem, RootWorkflowInstanceId, SessionHandle, SessionId, SessionSnapshot,
-    SuspensionEvent, SuspensionHandle, ToolCallEvent, ToolCallId, UsageEvent, WorkflowEvent,
-    WorkflowEventKind, WorkflowId, WorkflowInput, WorkflowInstanceId, WorkflowRunHandle,
-    WorkflowRunResult, WorkflowSnapshot, WorkflowState, WorkflowStateEvent,
+    SuspensionEvent, SuspensionHandle, SuspensionKind, ToolCallEvent, ToolCallId, UsageEvent,
+    WorkflowEvent, WorkflowEventKind, WorkflowId, WorkflowInput, WorkflowInstanceId,
+    WorkflowRunHandle, WorkflowRunResult, WorkflowSnapshot, WorkflowState, WorkflowStateEvent,
+    WorkflowWaitMode, WorkflowWaitOptions,
 };
 
 use kish_lingshu_runtime_contract::{
@@ -928,34 +929,78 @@ impl WorkflowRun {
         })))
     }
 
-    /// Wait until the canonical event sequence reaches one Workflow boundary.
+    /// Wait for completion or external intervention, continuing through automatic
+    /// admission/retry/service waits. Timeout returns Pending without cancelling work.
     pub async fn wait(&self, options: RequestOptions) -> Result<WorkflowRunResult, Error> {
-        let request_id = options.request_id().clone();
-        let mut events = self.events(options).await?;
-        let mut projector = WorkflowResultProjector::new(self.handle.clone());
-        while let Some(event) = events.next().await {
-            let event = event?;
-            match projector.observe(&event) {
-                Ok(Some(result)) => return Ok(result),
-                Ok(None) => {}
-                Err(error) => {
-                    return Err(Error::contract(error.message, Some(request_id)));
-                }
-            }
-        }
-        Err(Error::Transport(TransportFailure {
-            kind: TransportKind::Stream,
-            message: "Workflow event stream ended before a result boundary".to_string(),
-            request_id: Some(request_id),
-            retryable: true,
-        }))
+        self.wait_with_options(WorkflowWaitOptions::default(), options)
+            .await
     }
 
+    pub async fn wait_with_options(
+        &self,
+        wait: WorkflowWaitOptions,
+        options: RequestOptions,
+    ) -> Result<WorkflowRunResult, Error> {
+        let request_id = options.request_id().clone();
+        wait.validate()
+            .map_err(|error| Error::configuration("workflow_wait", error.message))?;
+        let projector = WorkflowResultProjector::with_mode(self.handle.clone(), wait.mode)
+            .with_cursor(self.cursor());
+        let configured = std::time::Duration::from_millis(wait.timeout_ms);
+        let budget = options
+            .deadline()
+            .map(|deadline| {
+                (*deadline.as_datetime() - chrono::Utc::now())
+                    .to_std()
+                    .unwrap_or_default()
+                    .min(configured)
+            })
+            .unwrap_or(configured);
+        // Commit only complete projection boundaries. Raw events() advances its
+        // cursor per event, which could split a detail/state pair on timeout.
+        projector
+            .wait(
+                budget,
+                self.inner.binding.subscribe_workflow(
+                    self.handle.workflow_instance_id,
+                    Some(self.cursor()),
+                    options,
+                ),
+                |cursor| {
+                    self.observation
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .cursor = Some(cursor.clone());
+                },
+                |error| {
+                    if error.code == kish_lingshu_runtime_contract::RuntimeErrorCode::Connectivity {
+                        Error::Transport(TransportFailure {
+                            kind: TransportKind::Stream,
+                            message: error.message,
+                            request_id: Some(request_id.clone()),
+                            retryable: error.retryable,
+                        })
+                    } else {
+                        Error::contract(error.message, Some(request_id.clone()))
+                    }
+                },
+            )
+            .await
+    }
+
+    /// Explicitly return at the next suspension, including automatic waits.
     pub async fn wait_to_boundary(
         &self,
         options: RequestOptions,
     ) -> Result<WorkflowRunResult, Error> {
-        self.wait(options).await
+        self.wait_with_options(
+            WorkflowWaitOptions {
+                mode: WorkflowWaitMode::Boundary,
+                ..Default::default()
+            },
+            options,
+        )
+        .await
     }
 }
 
@@ -1166,8 +1211,8 @@ mod tests {
         });
     }
 
-    #[test]
-    fn wait_projects_all_typed_workflow_boundaries() {
+    #[tokio::test]
+    async fn wait_projects_all_typed_workflow_boundaries() {
         futures::executor::block_on(async {
             let client = client();
             let workflow = client.workflows().select(WorkflowId(42)).unwrap();
@@ -1346,8 +1391,8 @@ mod tests {
         });
     }
 
-    #[test]
-    fn malformed_workflow_boundaries_are_contract_violations() {
+    #[tokio::test]
+    async fn malformed_workflow_boundaries_are_contract_violations() {
         futures::executor::block_on(async {
             for (case, signal) in [
                 ("missing-output", "contract_complete_without_output"),
@@ -1376,6 +1421,120 @@ mod tests {
                 ));
             }
         });
+    }
+
+    #[tokio::test]
+    async fn automatic_suspensions_are_transparent_but_explicit_boundary_wait_stops() {
+        let client = client();
+        let workflow = client.workflows().select(WorkflowId(42)).unwrap();
+        let run = workflow
+            .start(
+                WorkflowStart::structured(json!({})),
+                mutation("wait/automatic/start"),
+            )
+            .await
+            .unwrap();
+        run.signal(
+            WorkflowSignal::business("contract_auto_suspend", Value::Null),
+            mutation("wait/auto"),
+        )
+        .await
+        .unwrap();
+        run.signal(
+            WorkflowSignal::business("contract_complete", json!(42)),
+            mutation("wait/complete"),
+        )
+        .await
+        .unwrap();
+        let boundary = workflow.attach(run.handle().clone(), None).unwrap();
+        assert!(
+            matches!(boundary.wait_to_boundary(RequestOptions::new()).await.unwrap(),WorkflowRunResult::Suspended { suspension,.. } if suspension.kind == SuspensionKind::Admission)
+        );
+        assert!(
+            matches!(boundary.wait(RequestOptions::new()).await.unwrap(),WorkflowRunResult::Completed {output,..} if output==json!(42))
+        );
+        assert!(
+            matches!(run.wait(RequestOptions::new()).await.unwrap(),WorkflowRunResult::Completed {output,..} if output==json!(42))
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_timeout_keeps_partial_result_replayable_and_workflow_running() {
+        let client = client();
+        let run = client
+            .workflows()
+            .select(WorkflowId(42))
+            .unwrap()
+            .start(
+                WorkflowStart::structured(json!({})),
+                mutation("wait/partial/start"),
+            )
+            .await
+            .unwrap();
+        run.signal(
+            WorkflowSignal::business("contract_partial_output", json!(42)),
+            mutation("wait/output"),
+        )
+        .await
+        .unwrap();
+        let pending = run
+            .wait_with_options(
+                WorkflowWaitOptions {
+                    timeout_ms: 5,
+                    ..Default::default()
+                },
+                RequestOptions::new(),
+            )
+            .await
+            .unwrap();
+        let WorkflowRunResult::Pending {
+            cursor, last_state, ..
+        } = pending
+        else {
+            panic!("expected timeout")
+        };
+        assert_eq!(last_state, WorkflowState::Running);
+        assert_eq!(run.cursor(), cursor);
+        assert_eq!(
+            run.snapshot(RequestOptions::new()).await.unwrap().state,
+            WorkflowState::Running
+        );
+        run.signal(
+            WorkflowSignal::business("contract_complete_without_output", Value::Null),
+            mutation("wait/state"),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(run.wait(RequestOptions::new()).await.unwrap(),WorkflowRunResult::Completed {output,..} if output==json!(42))
+        );
+    }
+
+    #[tokio::test]
+    async fn request_deadline_caps_observation_without_terminating_workflow() {
+        let client = client();
+        let run = client
+            .workflows()
+            .select(WorkflowId(42))
+            .unwrap()
+            .start(
+                WorkflowStart::structured(json!({})),
+                mutation("wait/deadline/start"),
+            )
+            .await
+            .unwrap();
+        let result = run
+            .wait(
+                RequestOptions::new()
+                    .with_deadline(chrono::Utc::now() - chrono::Duration::seconds(1)),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(result, WorkflowRunResult::Pending { .. }));
+        assert_eq!(
+            run.snapshot(RequestOptions::new()).await.unwrap().state,
+            WorkflowState::Running
+        );
     }
 
     #[test]
