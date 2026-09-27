@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "source_commit": "b1822bff4278eb19033cf09eedd26afb6b351be5",
+  "source_commit": "5fd42832d7996593dbad2f71bbdc4fadd00c169f",
   "sdk_version": "0.1.0",
   "crates": [
     "sdk",
@@ -12,8 +12,8 @@
   ],
   "files": {
     ".gitignore": "95af8a5680ca44ce2f331799f908cb2d2f3dc86efcb57846def37e721f48dde7",
-    "Cargo.lock": "140cf4a188e270dabd63461e8c96fabea3762baab1c0555794b17f7e7dbabc09",
-    "Cargo.toml": "f39ac52d292b28307103047890d0f7180c0bfbda271f962624bea9be0c6c349b",
+    "Cargo.lock": "efac3ac9dd11bf0c0bff016c6ab40db582162ca4a857a4dfb9d2eacb4a1cc2e8",
+    "Cargo.toml": "f94338c87c9837320e9b214173895c5ab7bdae8b4797d6f83d6430fdd9f5c6d7",
     "README.md": "156e174441e9e6e287b04db25615e3fe8d435872b0066a53de3ce926ad362064",
     "contracts/event-dispatch/Cargo.toml": "1ef09fb3ee2a5a7839ceb6a51f04421e91ab5a6b8ec06e835870cea4600a5cf0",
     "contracts/event-dispatch/src/declaration.rs": "f2728eb60b3df86368263aa95a6b67511c51777f4ad107c3892f16c1d3d276d7",

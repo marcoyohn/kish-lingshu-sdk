@@ -18,7 +18,7 @@ futures-util = "0.3.29"
 http = "1"
 httpdate = "1"
 inventory = "0.3"
-jsonschema = { "version" = "0.33", "default-features" = false }
+jsonschema = { "version" = "0.46.10", "default-features" = false }
 kish-lingshu-event-dispatch-contract = { "path" = "contracts/event-dispatch" }
 kish-lingshu-foundation-contract = { "path" = "contracts/foundation" }
 kish-lingshu-runtime-contract = { "path" = "contracts/runtime" }
