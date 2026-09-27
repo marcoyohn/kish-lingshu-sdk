@@ -74,6 +74,7 @@ impl ProviderHttpAdapter {
                 .digest()
                 .map_err(|_| ServiceAuthError::InvalidNodeConfig)?,
         };
+        let started = tokio::time::Instant::now();
         let session: ProviderSession = self
             .connection
             .root_response_json(
@@ -84,44 +85,43 @@ impl ProviderHttpAdapter {
             .await?;
         validate_session(&session, None)?;
         registration.accept(Some(&session.instance))?;
-        drop(registration);
         let (cancel, mut stopped) = watch::channel(false);
         let (status, alive) = watch::channel(true);
+        let mut heartbeat = self.connection.track_heartbeat(
+            kish_lingshu_foundation_contract::instance_heartbeat::InstanceRoleKind::Provider,
+            vec![self.catalog.provider_key.clone()],
+            session.instance.clone(),
+            &session.credential,
+            Duration::from_millis(session.heartbeat_interval_ms),
+        )?;
+        drop(registration);
         let connection = self.connection.clone();
         let task = tokio::spawn(async move {
             let mut session = session;
+            let mut deadline = started + Duration::from_secs(30);
             let mut closed = connection.subscribe_closed();
             loop {
-                let remaining = (session.lease_expires_at_ms
-                    - chrono::Utc::now().timestamp_millis())
-                .max(0) as u64;
-                if remaining == 0 {
-                    break;
-                }
-                tokio::select! {
+                let (started, result) = tokio::select! {
                     _=stopped.changed()=>break,
                     _=closed.changed()=>break,
-                    _=tokio::time::sleep(Duration::from_millis(remaining.min(10_000)))=>{}
-                }
-                let result = async {
-                    let request = connection
-                        .service_request(
-                            reqwest::Method::POST,
-                            "provider-sessions/heartbeat",
-                            Some(&session.credential),
-                        )?
-                        .timeout(Duration::from_secs(3));
-                    crate::service_auth::response_json::<ProviderSession>(request).await
+                    _=tokio::time::sleep_until(deadline)=>break,
+                    result=heartbeat.next::<ProviderSession>()=>result,
                 };
-                let result = tokio::select! {_=stopped.changed()=>break,_=closed.changed()=>break,r=result=>r};
                 match result {
                     Ok(next) if validate_session(&next, Some(&session)).is_ok() => {
                         session = next;
+                        deadline = started + Duration::from_secs(30);
+                        heartbeat.update(&session.credential);
                     }
-                    Err(ServiceAuthError::Http(401 | 403 | 404 | 409)) => break,
+                    Err(error @ ServiceAuthError::Http(401)) => {
+                        connection.reject_authentication(error);
+                        break;
+                    }
+                    Ok(_) | Err(ServiceAuthError::Http(403 | 404 | 409 | 422)) => break,
                     _ => {}
                 }
             }
+            drop(heartbeat);
             status.send_replace(false);
             if let Ok(request) = connection.service_request(
                 reqwest::Method::POST,

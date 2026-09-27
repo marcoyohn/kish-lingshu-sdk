@@ -31,6 +31,7 @@ const MAX_CALLBACK_BYTES: usize = 1024 * 1024;
 const MAX_PROOF_BYTES: usize = 16 * 1024;
 const MAX_NONCES: usize = 16_384;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) mod heartbeat;
 
 /// Errors deliberately exclude URLs, remote bodies, credentials and proofs.
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
@@ -102,6 +103,7 @@ struct Shared {
     nonces: Mutex<HashMap<[u8; 32], i64>>,
     registration: tokio::sync::Mutex<InstanceRegistrationState>,
     closed: watch::Sender<Option<ServiceAuthError>>,
+    heartbeats: Arc<heartbeat::Heartbeats>,
 }
 
 impl Shared {
@@ -121,11 +123,20 @@ impl Shared {
 struct ConnectionOwner {
     shared: Arc<Shared>,
     refresh: Mutex<Option<JoinHandle<()>>>,
+    heartbeat: Mutex<Option<JoinHandle<()>>>,
 }
 
 impl Drop for ConnectionOwner {
     fn drop(&mut self) {
         self.shared.close(ServiceAuthError::Closed);
+        if let Some(task) = self
+            .heartbeat
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
+            task.abort();
+        }
         if let Some(task) = self
             .refresh
             .get_mut()
@@ -184,11 +195,14 @@ impl ServiceConnection {
             nonces: Mutex::new(HashMap::new()),
             registration: tokio::sync::Mutex::new(InstanceRegistrationState { request: None }),
             closed: watch::channel(None).0,
+            heartbeats: Arc::default(),
         });
         let refresh = tokio::spawn(refresh_trust(shared.clone()));
+        let heartbeat = tokio::spawn(heartbeat::run(shared.clone()));
         Ok(Self(Arc::new(ConnectionOwner {
             shared,
             refresh: Mutex::new(Some(refresh)),
+            heartbeat: Mutex::new(Some(heartbeat)),
         })))
     }
 
@@ -248,9 +262,19 @@ impl ServiceConnection {
         Ok(router.layer(middleware::from_fn_with_state(state, authenticate_callback)))
     }
 
-    /// Cancels and joins trust refresh for all clones; protected routes fail closed.
+    /// Cancels and joins trust refresh and heartbeats for all clones; routes fail closed.
     pub async fn shutdown(&self) {
         self.0.shared.close(ServiceAuthError::Closed);
+        let heartbeat = self
+            .0
+            .heartbeat
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(task) = heartbeat {
+            task.abort();
+            let _ = task.await;
+        }
         let task = self
             .0
             .refresh
@@ -395,6 +419,13 @@ fn root_request(
 }
 
 pub(crate) async fn response_bytes(request: RequestBuilder) -> Result<Vec<u8>, ServiceAuthError> {
+    response_bytes_limited(request, MAX_RESPONSE_BYTES).await
+}
+
+async fn response_bytes_limited(
+    request: RequestBuilder,
+    maximum: usize,
+) -> Result<Vec<u8>, ServiceAuthError> {
     let mut response = request
         .send()
         .await
@@ -404,7 +435,7 @@ pub(crate) async fn response_bytes(request: RequestBuilder) -> Result<Vec<u8>, S
     }
     if response
         .content_length()
-        .is_some_and(|size| size > MAX_RESPONSE_BYTES as u64)
+        .is_some_and(|size| size > maximum as u64)
     {
         return Err(ServiceAuthError::InvalidResponse);
     }
@@ -414,7 +445,7 @@ pub(crate) async fn response_bytes(request: RequestBuilder) -> Result<Vec<u8>, S
         .await
         .map_err(|_| ServiceAuthError::Transport)?
     {
-        if chunk.len() > MAX_RESPONSE_BYTES - bytes.len() {
+        if chunk.len() > maximum - bytes.len() {
             return Err(ServiceAuthError::InvalidResponse);
         }
         bytes.extend_from_slice(&chunk);
@@ -597,9 +628,11 @@ mod tests {
                         .collect(),
                 ),
                 closed: watch::channel(None).0,
+                heartbeats: Arc::default(),
                 registration: tokio::sync::Mutex::new(InstanceRegistrationState { request: None }),
             }),
             refresh: Mutex::new(None),
+            heartbeat: Mutex::new(None),
         }));
         let target = "https://callback.example/";
         let router = connection

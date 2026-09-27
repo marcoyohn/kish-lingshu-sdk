@@ -7,11 +7,11 @@ use kish_lingshu_event_dispatch_contract::{
 use tokio::{
     sync::watch,
     task::JoinHandle,
-    time::{sleep, sleep_until, Instant},
+    time::{sleep_until, Instant},
 };
 
 use crate::{
-    service_auth::{callback_url, response_bytes, response_json},
+    service_auth::{callback_url, response_bytes},
     ServiceAuthError, ServiceConnection,
 };
 
@@ -74,7 +74,7 @@ impl EnrolledConsumerNodeStatus {
     }
 }
 
-/// Owns the automatic heartbeat loop. Drop cancels renewal and attempts a
+/// Observes the shared instance heartbeat. Drop removes this role and attempts a
 /// bounded, generation-fenced deregistration; shutdown additionally joins it.
 pub struct EnrolledConsumerNode {
     group_key: String,
@@ -125,15 +125,25 @@ impl EnrolledConsumerNode {
             .await?;
         validate_session(&session, &config, None)?;
         registration.accept(session.instance.as_ref())?;
-        drop(registration);
         let deadline = lease_deadline(&session, started)?;
         let (status_tx, status) = watch::channel(EnrolledConsumerNodeStatus::Registered {
             lease: session.lease.clone(),
         });
         let (cancel, cancel_rx) = watch::channel(false);
         let group_key = config.group_key.clone();
+        let heartbeat = connection.track_heartbeat(
+            kish_lingshu_foundation_contract::instance_heartbeat::InstanceRoleKind::Event,
+            vec![session.group_key.clone(), session.lease.node_id.clone()],
+            session
+                .instance
+                .clone()
+                .ok_or(ServiceAuthError::InvalidResponse)?,
+            &session.credential,
+            Duration::from_secs(session.lease.heartbeat_interval_seconds),
+        )?;
+        drop(registration);
         let task = tokio::spawn(renew(
-            connection, config, session, deadline, status_tx, cancel_rx,
+            connection, config, session, deadline, status_tx, cancel_rx, heartbeat,
         ));
         Ok(Self {
             group_key,
@@ -262,9 +272,8 @@ async fn renew(
     mut deadline: Instant,
     status: watch::Sender<EnrolledConsumerNodeStatus>,
     mut cancel: watch::Receiver<bool>,
+    mut heartbeat: crate::service_auth::heartbeat::RoleHeartbeat,
 ) {
-    let mut delay = Duration::from_secs(session.lease.heartbeat_interval_seconds);
-    let mut failures = 0_u32;
     let mut closed = connection.subscribe_closed();
     loop {
         let closure = closed.borrow_and_update().clone();
@@ -287,8 +296,9 @@ async fn renew(
             biased;
             _ = closed.changed() => { continue; }
             _ = cancel.changed() => {
+                drop(heartbeat);
+                status.send_replace(EnrolledConsumerNodeStatus::Stopped { lease: session.lease.clone() });
                 deregister(&connection, &session).await;
-                status.send_replace(EnrolledConsumerNodeStatus::Stopped { lease: session.lease });
                 return;
             }
             _ = sleep_until(deadline) => {
@@ -296,9 +306,8 @@ async fn renew(
                 return;
             }
             result = async {
-                sleep(delay).await;
-                let started = Instant::now();
-                let updated: ConsumerSession = response_json(connection.session_request("consumer-sessions/heartbeat", &session.credential)?).await?;
+                let (started, updated) = heartbeat.next::<ConsumerSession>().await;
+                let updated = updated?;
                 validate_session(&updated, &config, Some(&session))?;
                 let deadline = lease_deadline(&updated, started)?;
                 Ok::<_, ServiceAuthError>((updated, deadline))
@@ -308,8 +317,7 @@ async fn renew(
             Ok((updated, updated_deadline)) => {
                 session = updated;
                 deadline = updated_deadline;
-                failures = 0;
-                delay = Duration::from_secs(session.lease.heartbeat_interval_seconds);
+                heartbeat.update(&session.credential);
                 status.send_replace(EnrolledConsumerNodeStatus::Registered {
                     lease: session.lease.clone(),
                 });
@@ -339,11 +347,6 @@ async fn renew(
                     });
                     return;
                 }
-                failures = failures.saturating_add(1);
-                delay = Duration::from_secs(
-                    (1_u64 << failures.saturating_sub(1).min(5))
-                        .min(session.lease.heartbeat_interval_seconds),
-                );
                 status.send_replace(EnrolledConsumerNodeStatus::HeartbeatRetrying {
                     lease: session.lease.clone(),
                     failure,

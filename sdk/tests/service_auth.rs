@@ -40,6 +40,8 @@ struct Control {
     trust_calls: AtomicUsize,
     enrollments: AtomicUsize,
     heartbeats: AtomicUsize,
+    heartbeat_requests: AtomicUsize,
+    heartbeat_sizes: Mutex<Vec<usize>>,
     deregistrations: AtomicUsize,
     sessions: Mutex<HashMap<String, ConsumerSession>>,
     registrations: Mutex<Vec<kish_lingshu_foundation_contract::ServiceInstanceRegistration>>,
@@ -115,9 +117,22 @@ async fn enroll(
             member_id: generation,
             node_id: input.node_id.clone(),
             membership_generation: generation,
-            lease_seconds: 3,
-            heartbeat_interval_seconds: 1,
-            lease_expires_at: Utc::now() + chrono::Duration::seconds(3),
+            lease_seconds: if control.mode.load(Ordering::SeqCst) >= 30 {
+                30
+            } else {
+                3
+            },
+            heartbeat_interval_seconds: if control.mode.load(Ordering::SeqCst) >= 30 {
+                10
+            } else {
+                1
+            },
+            lease_expires_at: Utc::now()
+                + chrono::Duration::seconds(if control.mode.load(Ordering::SeqCst) >= 30 {
+                    30
+                } else {
+                    3
+                }),
         },
         credential: format!("session-secret-{}-{generation}-0", input.node_id),
         expires_at: Utc::now().timestamp() + 300,
@@ -169,6 +184,7 @@ async fn heartbeat(
     );
     let count = control.heartbeats.fetch_add(1, Ordering::SeqCst) + 1;
     match control.mode.load(Ordering::SeqCst) {
+        31 if session.group_key == "group-42" => return StatusCode::FORBIDDEN.into_response(),
         1 => return (StatusCode::UNAUTHORIZED, ROOT_KEY).into_response(),
         2 => return (StatusCode::CONFLICT, session.credential).into_response(),
         3 => session.group_id += 1,
@@ -189,7 +205,8 @@ async fn heartbeat(
         "session-secret-{}-{}-{count}",
         session.lease.node_id, session.lease.membership_generation
     );
-    session.lease.lease_expires_at = Utc::now() + chrono::Duration::seconds(3);
+    session.lease.lease_expires_at =
+        Utc::now() + chrono::Duration::seconds(session.lease.lease_seconds as i64);
     session.expires_at = Utc::now().timestamp() + 300;
     control
         .sessions
@@ -197,6 +214,72 @@ async fn heartbeat(
         .unwrap()
         .insert(session.lease.node_id.clone(), session.clone());
     Json(session).into_response()
+}
+
+async fn instance_heartbeat(
+    State(control): State<Arc<Control>>,
+    headers: HeaderMap,
+    Json(input): Json<
+        kish_lingshu_foundation_contract::instance_heartbeat::InstanceHeartbeatRequest,
+    >,
+) -> Response {
+    use kish_lingshu_foundation_contract::instance_heartbeat::*;
+    check_root(&headers);
+    control.heartbeat_requests.fetch_add(1, Ordering::SeqCst);
+    control
+        .heartbeat_sizes
+        .lock()
+        .unwrap()
+        .push(input.roles.len());
+    if control.mode.load(Ordering::SeqCst) == 1 {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let mut roles = Vec::new();
+    for role in input.roles {
+        #[cfg(feature = "service-http")]
+        if role.kind != InstanceRoleKind::Event {
+            let mut session: serde_json::Value = serde_json::from_str(&role.credential).unwrap();
+            session["lease_expires_at_ms"] = (Utc::now().timestamp_millis() + 30_000).into();
+            session["credential"] = role.credential.into();
+            roles.push(InstanceHeartbeatResult {
+                id: role.id,
+                status: 200,
+                session: Some(session),
+            });
+            continue;
+        }
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {}", role.credential).parse().unwrap(),
+        );
+        let response = heartbeat(State(control.clone()), headers, Bytes::new()).await;
+        let status = response.status().as_u16();
+        let bytes = axum::body::to_bytes(response.into_body(), 65536)
+            .await
+            .unwrap();
+        roles.push(InstanceHeartbeatResult {
+            id: role.id,
+            status,
+            session: if status == 200 {
+                Some(serde_json::from_slice(&bytes).unwrap())
+            } else {
+                None
+            },
+        });
+    }
+    let mut response = InstanceHeartbeatResponse {
+        instance: input.instance,
+        roles,
+    };
+    match control.mode.load(Ordering::SeqCst) {
+        13 => response.roles.push(response.roles[0].clone()),
+        14 => response.roles.clear(),
+        15 => response.roles[0].id += 99,
+        16 => response.instance.generation = "foreign".into(),
+        _ => {}
+    }
+    Json(response).into_response()
 }
 
 async fn deregister(
@@ -226,6 +309,10 @@ impl Server {
         let control = Arc::new(Control::default());
         control.mode.store(mode, Ordering::SeqCst);
         let app = Router::new()
+            .route(
+                "/api/user/services/v1/instance-sessions/heartbeat",
+                post(instance_heartbeat),
+            )
             .route("/api/user/event-dispatch/v1/service-auth/trust", get(trust))
             .route(
                 "/api/user/event-dispatch/v1/consumer-enrollments",
@@ -248,6 +335,26 @@ impl Server {
                 }),
             )
             .with_state(control.clone());
+        #[cfg(feature = "service-http")]
+        let app = app
+            .route("/api/user/services/v1/enrollments", post(|Json(request): Json<kish_lingshu_sdk::services::ServiceEnrollment>| async move {
+                let session = serde_json::json!({
+                    "instance": { "instance_id": request.instance.as_ref().unwrap().instance_id, "generation": "shared-generation" },
+                    "node_id": request.node_id, "generation": "call-generation", "credential": "initial",
+                    "lease_expires_at_ms": Utc::now().timestamp_millis() + 30_000, "heartbeat_interval_ms": 10_000,
+                });
+                let mut result = session.clone(); result["credential"] = session.to_string().into(); Json(result)
+            }))
+            .route("/api/user/services/v1/provider-enrollments", post(|Json(request): Json<kish_lingshu_sdk::provider::ProviderEnrollment>| async move {
+                let session = serde_json::json!({
+                    "instance": { "instance_id": request.instance.instance_id, "generation": "shared-generation" },
+                    "generation": "provider-generation", "credential": "initial",
+                    "lease_expires_at_ms": Utc::now().timestamp_millis() + 30_000, "heartbeat_interval_ms": 10_000,
+                });
+                let mut result = session.clone(); result["credential"] = session.to_string().into(); Json(result)
+            }))
+            .route("/api/user/services/v1/sessions/deregister", post(|| async { StatusCode::NO_CONTENT }))
+            .route("/api/user/services/v1/provider-sessions/deregister", post(|| async { StatusCode::NO_CONTENT }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/", listener.local_addr().unwrap());
         let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -625,7 +732,7 @@ async fn heartbeat_rejects_every_identity_mismatch_and_never_reenrolls() {
             assert!(!format!("{status:?} {node:?}").contains(ROOT_KEY));
             assert!(!format!("{status:?} {node:?}").contains("session-secret"));
             node.shutdown().await;
-            assert_eq!(server.control.heartbeats.load(Ordering::SeqCst), 1);
+            assert_eq!(server.control.heartbeat_requests.load(Ordering::SeqCst), 1);
             assert_eq!(server.control.deregistrations.load(Ordering::SeqCst), 0);
         });
     }
@@ -639,16 +746,28 @@ async fn restart_fences_previous_generation_without_affecting_replacement() {
     let server = Server::start(0).await;
     let connection = server.connect().await.unwrap();
     let old = connection.enroll_consumer(config("pod-a")).await.unwrap();
+    let peer = connection.enroll_consumer(config("pod-b")).await.unwrap();
     let replacement = connection.enroll_consumer(config("pod-a")).await.unwrap();
+    let mut renewed = replacement.subscribe();
     assert!(matches!(
         terminal(old.subscribe()).await,
         EnrolledConsumerNodeStatus::Fenced { .. }
     ));
     old.shutdown().await;
+    tokio::time::timeout(Duration::from_secs(2), renewed.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        server.control.heartbeat_sizes.lock().unwrap().as_slice(),
+        &[2]
+    );
     assert!(!replacement.status().is_terminal());
+    assert!(!peer.status().is_terminal());
     replacement.shutdown().await;
-    assert_eq!(server.control.deregistrations.load(Ordering::SeqCst), 1);
-    assert_eq!(server.control.enrollments.load(Ordering::SeqCst), 2);
+    peer.shutdown().await;
+    assert_eq!(server.control.deregistrations.load(Ordering::SeqCst), 2);
+    assert_eq!(server.control.enrollments.load(Ordering::SeqCst), 3);
 }
 
 #[tokio::test]
@@ -985,4 +1104,102 @@ async fn session_auth_rejection_closes_shared_callback_connection() {
     assert_eq!(server.control.enrollments.load(Ordering::SeqCst), 2);
     node.shutdown().await;
     peer.shutdown().await;
+}
+
+#[cfg(feature = "service-http")]
+#[tokio::test]
+async fn hundred_groups_call_and_provider_share_one_heartbeat_and_role_rejection_is_isolated() {
+    use kish_lingshu_sdk::{provider::*, services::*};
+    let server = Server::start(30).await;
+    let connection = server.connect().await.unwrap();
+    let mut groups = Vec::new();
+    for index in 0..100 {
+        let mut config = config(&format!("node-{index}"));
+        config.group_key = format!("group-{index}");
+        groups.push(connection.enroll_consumer(config).await.unwrap());
+    }
+    let registry = Arc::new(ServiceRegistryBuilder::empty(APP).unwrap().build().unwrap());
+    let call = connection
+        .enroll_service("call", "http://127.0.0.1/call", 4, registry)
+        .await
+        .unwrap();
+    let provider = ProviderHttpAdapter::new(
+        connection.clone(),
+        ProviderCatalog {
+            format_version: 1,
+            application_id: APP.into(),
+            provider_key: "provider".into(),
+            release: "v1".into(),
+            services: None,
+            events: None,
+            workflows: vec![],
+        },
+    )
+    .unwrap()
+    .enroll("provider", "http://127.0.0.1/catalog")
+    .await
+    .unwrap();
+    async fn requests(control: &Control, count: usize) {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while control.heartbeat_requests.load(Ordering::SeqCst) < count {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            // Wait for role observers to consume the actual HTTP response.
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        })
+        .await
+        .unwrap();
+    }
+    requests(&server.control, 1).await;
+    assert_eq!(
+        server.control.heartbeat_sizes.lock().unwrap().as_slice(),
+        &[102]
+    );
+    assert!(groups.iter().all(|g| !g.status().is_terminal()));
+    assert!(matches!(
+        call.status(),
+        ServiceEnrollmentStatus::Ready { .. }
+    ));
+    assert!(provider.is_live());
+    server.control.mode.store(31, Ordering::SeqCst);
+    requests(&server.control, 2).await;
+    assert!(groups[42].status().is_terminal());
+    assert!(!groups[41].status().is_terminal());
+    assert!(matches!(
+        call.status(),
+        ServiceEnrollmentStatus::Ready { .. }
+    ));
+    assert!(provider.is_live());
+    // Drop one more Event and both non-Event roles before the next shared tick.
+    groups.pop().unwrap().shutdown().await;
+    call.shutdown().await;
+    provider.shutdown().await;
+    requests(&server.control, 3).await;
+    assert_eq!(
+        server.control.heartbeat_sizes.lock().unwrap().as_slice(),
+        &[102, 102, 98]
+    );
+    for group in groups {
+        group.shutdown().await;
+    }
+    connection.shutdown().await;
+}
+
+#[tokio::test]
+async fn malformed_batch_responses_never_extend_role_authority() {
+    for mode in 13..=16 {
+        let server = Server::start(mode).await;
+        let connection = server.connect().await.unwrap();
+        let node = connection.enroll_consumer(config("node")).await.unwrap();
+        assert!(matches!(
+            terminal(node.subscribe()).await,
+            EnrolledConsumerNodeStatus::Failed {
+                failure: ServiceAuthError::InvalidResponse,
+                ..
+            }
+        ));
+        assert_eq!(server.control.heartbeat_requests.load(Ordering::SeqCst), 1);
+        node.shutdown().await;
+        connection.shutdown().await;
+    }
 }

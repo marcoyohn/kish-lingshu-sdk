@@ -13,6 +13,8 @@ use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 use thiserror::Error;
 
 #[cfg(feature = "service-auth")]
+pub mod instance_heartbeat;
+#[cfg(feature = "service-auth")]
 pub mod service_auth;
 
 /// A stable deployment instance and one SDK connection incarnation. This is

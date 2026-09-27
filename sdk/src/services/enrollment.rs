@@ -73,7 +73,6 @@ impl ServiceConnection {
             .await?;
         validate_session(&session, &request.node_id, None)?;
         registration.accept(session.instance.as_ref())?;
-        drop(registration);
         let deadline = started + Duration::from_secs(30);
         let (status_tx, status) = watch::channel(ServiceEnrollmentStatus::Ready {
             node_id: session.node_id.clone(),
@@ -81,8 +80,21 @@ impl ServiceConnection {
             lease_expires_at_ms: session.lease_expires_at_ms,
         });
         let (cancel, cancel_rx) = watch::channel(false);
+        let heartbeat = self.track_heartbeat(
+            kish_lingshu_foundation_contract::instance_heartbeat::InstanceRoleKind::Call,
+            vec![session.node_id.clone()],
+            session
+                .instance
+                .clone()
+                .ok_or(ServiceAuthError::InvalidResponse)?,
+            &session.credential,
+            Duration::from_millis(session.heartbeat_interval_ms),
+        )?;
+        drop(registration);
         let connection = self.clone();
-        let task = tokio::spawn(renew(connection, session, deadline, status_tx, cancel_rx));
+        let task = tokio::spawn(renew(
+            connection, session, deadline, status_tx, cancel_rx, heartbeat,
+        ));
         Ok(EnrolledService {
             cancel,
             status,
@@ -114,30 +126,16 @@ async fn renew(
     mut deadline: Instant,
     status: watch::Sender<ServiceEnrollmentStatus>,
     mut cancel: watch::Receiver<bool>,
+    mut heartbeat: crate::service_auth::heartbeat::RoleHeartbeat,
 ) {
     let mut closed = connection.subscribe_closed();
     let mut unavailable = false;
     loop {
-        tokio::select! {
+        let (started, result) = tokio::select! {
             _=cancel.changed()=>break,
             _=closed.changed()=>break,
             _=tokio::time::sleep_until(deadline)=>{unavailable = true; break;},
-            _=tokio::time::sleep(Duration::from_secs(10))=>{}
-        }
-        let started = Instant::now();
-        let request = match connection.service_request(
-            reqwest::Method::POST,
-            "sessions/heartbeat",
-            Some(&session.credential),
-        ) {
-            Ok(r) => r,
-            Err(_) => break,
-        };
-        let result: Result<ServiceSession, ServiceAuthError> = tokio::select! {
-            _=cancel.changed()=>break,
-            _=closed.changed()=>break,
-            _=tokio::time::sleep_until(deadline)=>{unavailable = true; break;},
-            r=crate::service_auth::response_json(request)=>r
+            result=heartbeat.next::<ServiceSession>()=>result,
         };
         match result {
             Ok(next) => {
@@ -146,6 +144,7 @@ async fn renew(
                 }
                 session = next;
                 deadline = started + Duration::from_secs(30);
+                heartbeat.update(&session.credential);
                 status.send_replace(ServiceEnrollmentStatus::Ready {
                     node_id: session.node_id.clone(),
                     generation: session.generation.clone(),
@@ -164,6 +163,7 @@ async fn renew(
             Err(_) => {}
         }
     }
+    drop(heartbeat);
     status.send_replace(if unavailable {
         ServiceEnrollmentStatus::Unavailable
     } else {
