@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "source_commit": "f35f4df14faeeb1b74bc65ec41abfdef37715f25",
+  "source_commit": "b1822bff4278eb19033cf09eedd26afb6b351be5",
   "sdk_version": "0.1.0",
   "crates": [
     "sdk",
@@ -44,7 +44,7 @@
     "contracts/runtime/src/lib.rs": "5e6d5fba34afbb50637818796de78205246c95a5170e5c5a103d70d309b02666",
     "contracts/runtime/src/ports.rs": "9e433b25f4b97d7ccec89e44771aa82649cf74cf249ab0b9e19065f50b185fdb",
     "contracts/runtime/src/problem.rs": "0c5f646374ece5cdb3e08601c865c389109fb1750d3ccf830d6b978929908be2",
-    "contracts/runtime/src/provider.rs": "ed20981629eda570d481dc23a6fa1f8b04aa6e62295ad2fcadd4afdfe0292ad6",
+    "contracts/runtime/src/provider.rs": "5653856264049f45cb5da57bcfa7eb755de7b7fb25d87e4bdcf110a88df0a298",
     "contracts/runtime/src/request.rs": "ed113170f6ba32f0c0f9850423fb6ca08cc7b3104af2223b4aa9eb80e8b317be",
     "contracts/runtime/src/result_projection.rs": "9c3bae07e7a3148c54e52389df80a09cade194cf7cb061a42b4175dffa4f908e",
     "contracts/runtime/src/retry.rs": "e5c00c2a834ab94552bbcb76b792ffb72e470cab67d1da46a934b57dc1c27fbd",

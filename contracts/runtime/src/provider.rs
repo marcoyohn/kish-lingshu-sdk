@@ -157,6 +157,9 @@ pub struct ProviderApplyRequest {
     /// Explicit: import drafts by default, never implicitly publish workflows.
     #[serde(default)]
     pub publish: bool,
+    /// Applies only to missing source-owned Event resources, never Services or Workflows.
+    #[serde(default)]
+    pub event_retirement: RetirementMode,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProviderReceipt {
@@ -169,6 +172,27 @@ pub struct ProviderReceipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn provider_retirement_is_explicit_and_defaults_to_preservation() {
+        let old: ProviderApplyRequest = serde_json::from_value(serde_json::json!({
+            "plan_id": "plan", "publish": false
+        }))
+        .unwrap();
+        assert_eq!(old.event_retirement, RetirementMode::PreserveMissing);
+        let explicit: ProviderApplyRequest = serde_json::from_value(serde_json::json!({
+            "plan_id": "plan", "event_retirement": "retire_missing"
+        }))
+        .unwrap();
+        assert_eq!(explicit.event_retirement, RetirementMode::RetireMissing);
+        assert!(!explicit.publish);
+        assert!(
+            serde_json::from_value::<ProviderApplyRequest>(serde_json::json!({
+                "plan_id": "plan", "event_retirement": "delete"
+            }))
+            .is_err()
+        );
+    }
+
     #[test]
     fn identity_does_not_depend_on_release_and_duplicate_keys_fail() {
         let workflow = ProviderWorkflow {
@@ -200,4 +224,6 @@ pub struct ProviderImportStatus {
     pub plan: ProviderPlan,
     pub receipt: ProviderReceipt,
     pub publish: Option<bool>,
+    #[serde(default)]
+    pub event_retirement: RetirementMode,
 }
