@@ -1,139 +1,134 @@
-//! Resource admission for Workflow execution. No provider payloads or scheduler ownership.
-use async_trait::async_trait;
+//! Host-load admission configuration and continuation probe contracts.
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct ExecutionAdmissionConfig {
-    /// Shared by every Runtime replica in this capacity domain.
-    pub namespace: String,
-    pub revision: u64,
-    #[serde(default)]
-    pub active_roots: Option<u32>,
-    /// Keys are logical model names. `*` is a shared pool for all models.
-    #[serde(default)]
-    pub models: BTreeMap<String, u32>,
-    /// Named resources for additional node adapters; runtime keys use `resources/`.
-    #[serde(default)]
-    pub resources: BTreeMap<String, u32>,
-    #[serde(default = "default_wait")]
+    pub enabled: bool,
+    pub cpu_high_percent: u8,
+    pub cpu_recover_percent: u8,
+    pub memory_high_percent: u8,
+    pub memory_recover_percent: u8,
+    pub sample_interval_ms: u64,
+    pub stale_after_ms: u64,
     pub maximum_wait_ms: u64,
-    #[serde(default = "default_hold")]
-    pub maximum_hold_ms: u64,
+    pub prefer_cgroup_cpu: bool,
+    pub psi: LoadPsiConfig,
 }
-fn default_wait() -> u64 {
-    60_000
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LoadPsiConfig {
+    pub enabled: bool,
+    pub cpu_high_percent: u8,
+    pub cpu_recover_percent: u8,
+    pub memory_high_percent: u8,
+    pub memory_recover_percent: u8,
 }
-fn default_hold() -> u64 {
-    3_600_000
+impl Default for LoadPsiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cpu_high_percent: 20,
+            cpu_recover_percent: 10,
+            memory_high_percent: 10,
+            memory_recover_percent: 5,
+        }
+    }
+}
+impl Default for ExecutionAdmissionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            cpu_high_percent: 90,
+            cpu_recover_percent: 75,
+            memory_high_percent: 90,
+            memory_recover_percent: 80,
+            sample_interval_ms: 1000,
+            stale_after_ms: 5000,
+            maximum_wait_ms: 60000,
+            prefer_cgroup_cpu: true,
+            psi: LoadPsiConfig::default(),
+        }
+    }
 }
 impl ExecutionAdmissionConfig {
     pub fn validate(&self) -> Result<(), String> {
-        if self.namespace.is_empty()
-            || self.namespace.len() > 128
-            || self.revision == 0
+        if self.cpu_high_percent > 100
+            || self.memory_high_percent > 100
+            || self.cpu_recover_percent >= self.cpu_high_percent
+            || self.memory_recover_percent >= self.memory_high_percent
+            || !(250..=60000).contains(&self.sample_interval_ms)
+            || self.stale_after_ms < self.sample_interval_ms.saturating_mul(2)
+            || self.stale_after_ms > 300000
             || self.maximum_wait_ms == 0
-            || self.maximum_wait_ms > 86_400_000
-            || self.maximum_hold_ms < 1000
-            || self.maximum_hold_ms > 86_400_000
-            || self.models.len() + self.resources.len() > 256
-            || self
-                .active_roots
-                .into_iter()
-                .chain(self.models.values().copied())
-                .chain(self.resources.values().copied())
-                .any(|n| n == 0 || n > 65536)
-            || self
-                .models
-                .keys()
-                .chain(self.resources.keys())
-                .any(|k| k.is_empty() || k.len() > 256)
+            || self.maximum_wait_ms > 86400000
+            || self.psi.cpu_high_percent > 100
+            || self.psi.memory_high_percent > 100
+            || self.psi.cpu_recover_percent >= self.psi.cpu_high_percent
+            || self.psi.memory_recover_percent >= self.psi.memory_high_percent
         {
-            return Err("Invalid execution admission configuration".into());
+            return Err("Invalid workflow_load thresholds, sampling interval or deadline".into());
         }
         Ok(())
     }
     pub fn enabled(&self) -> bool {
-        self.active_roots.is_some() || !self.models.is_empty() || !self.resources.is_empty()
+        self.enabled
     }
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ResourceClaim {
-    pub key: String,
-    pub capacity: u32,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourceRequest {
-    pub request_id: String,
-    /// Root, execution path, execution sequence and internal operation.
-    pub owner: String,
-    /// The saved wait cannot authorize a new execution after this absolute deadline.
-    pub valid_until_ms: i64,
-    pub claims: Vec<ResourceClaim>,
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ResourcePermit {
-    pub request: ResourceRequest,
-    pub expires_at_ms: i64,
-    /// Server-computed remaining lease; callers subtract request round-trip time.
-    pub remaining_ms: u64,
-}
-#[derive(Debug, Clone)]
-pub enum ResourceDecision {
-    Granted(ResourcePermit),
-    Waiting { next_check_at_ms: i64 },
+pub fn default_maximum_receipts() -> u32 {
+    1_048_576
 }
 
-#[async_trait]
-pub trait ResourceAdmission: Send + Sync {
-    /// Atomically claim all resources and a single execution authorization.
-    /// Repeating a claimed nonce MUST NOT authorize a second execution.
-    async fn acquire(
-        &self,
-        request: &ResourceRequest,
-    ) -> Result<ResourceDecision, crate::service::CoordinationError>;
-    async fn release(
-        &self,
-        permit: &ResourcePermit,
-    ) -> Result<(), crate::service::CoordinationError>;
+pub enum LoadDecision {
+    Ready,
+    Waiting {
+        next_check_at_ms: i64,
+        reason: String,
+    },
+}
+/// A cached local pressure check, independent of workflow identity or distributed quotas.
+pub trait LoadAdmission: Send + Sync {
+    fn check(&self) -> LoadDecision;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-
     #[test]
-    fn admission_configuration_defaults_and_bounds() {
-        let config: ExecutionAdmissionConfig =
-            serde_json::from_value(json!({"namespace":"test","revision":1})).unwrap();
+    fn load_defaults_and_validation_reject_removed_quota_settings() {
+        let config: ExecutionAdmissionConfig = serde_json::from_str("{}").unwrap();
         config.validate().unwrap();
-        assert!(!config.enabled());
-        assert_eq!(config.maximum_wait_ms, 60000);
-        assert_eq!(config.maximum_hold_ms, 3600000);
-        for patch in [
-            json!({"active_roots":0}),
-            json!({"models":{"x":65537}}),
-            json!({"resources":{"":1}}),
-            json!({"maximum_hold_ms":999}),
-            json!({"maximum_wait_ms":86400001}),
-            json!({"revision":0}),
+        assert!(config.enabled);
+        assert_eq!(config.sample_interval_ms, 1000);
+        assert!(config.prefer_cgroup_cpu && config.psi.enabled);
+        let disabled: ExecutionAdmissionConfig =
+            serde_json::from_str(r#"{"psi":{"enabled":false}}"#).unwrap();
+        assert!(!disabled.psi.enabled);
+        disabled.validate().unwrap();
+        assert!(
+            serde_json::from_str::<ExecutionAdmissionConfig>(r#"{"psi":{"enabld":false}}"#)
+                .is_err()
+        );
+        for value in [
+            serde_json::json!({"active_roots":8}),
+            serde_json::json!({"models":{"*":8}}),
+            serde_json::json!({"resources":{"x":2}}),
         ] {
-            let mut value = serde_json::to_value(&config).unwrap();
-            value
-                .as_object_mut()
-                .unwrap()
-                .extend(patch.as_object().unwrap().clone());
+            assert!(serde_json::from_value::<ExecutionAdmissionConfig>(value).is_err());
+        }
+        for value in [
+            serde_json::json!({"cpu_high_percent":75,"cpu_recover_percent":75}),
+            serde_json::json!({"sample_interval_ms":100}),
+            serde_json::json!({"stale_after_ms":1000}),
+            serde_json::json!({"memory_high_percent":101}),
+            serde_json::json!({"psi":{"cpu_high_percent":10,"cpu_recover_percent":10}}),
+            serde_json::json!({"psi":{"memory_high_percent":101}}),
+        ] {
             assert!(serde_json::from_value::<ExecutionAdmissionConfig>(value)
                 .unwrap()
                 .validate()
                 .is_err());
         }
-        assert!(serde_json::from_value::<ExecutionAdmissionConfig>(
-            json!({"namespace":"test","revision":1,"models_typo":{}})
-        )
-        .is_err());
     }
 }
