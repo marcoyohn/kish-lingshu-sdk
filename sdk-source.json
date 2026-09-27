@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "source_commit": "79682467970ca926e8c996c07a15bf535c3b99f7",
+  "source_commit": "916defeb10c47c5647ed69ce015fe25ec3f2d67d",
   "sdk_version": "0.1.0",
   "crates": [
     "sdk",
@@ -18,7 +18,7 @@
     "contracts/event-dispatch/Cargo.toml": "1ef09fb3ee2a5a7839ceb6a51f04421e91ab5a6b8ec06e835870cea4600a5cf0",
     "contracts/event-dispatch/src/declaration.rs": "f2728eb60b3df86368263aa95a6b67511c51777f4ad107c3892f16c1d3d276d7",
     "contracts/event-dispatch/src/event.rs": "03f021772d752dc5821a9b1b58ef0442d8b5cf9d786f0c408beef26a7b8d33a5",
-    "contracts/event-dispatch/src/import.rs": "9b9353b5cec38ce494f4dccf06a08173d61ad2237c9c4a45797190f8253de586",
+    "contracts/event-dispatch/src/import.rs": "50cdc58f6019bc07014ea4f61a373d1c27bdbcd86447ebb8efde9eb2f49618e3",
     "contracts/event-dispatch/src/lib.rs": "8afa0484745dc52143927bb1929c16dee19f206c73a5207816d9fa1a43a2d2b7",
     "contracts/event-dispatch/src/manifest.rs": "1f53146954921723b84fb77d9e32ee2cd0547cd27a1290ebc253457cc362c715",
     "contracts/event-dispatch/tests/contracts.rs": "3e810f8d585258a46915df1bfe2022d8d10d5fd7f40976a85bed37a96a1ada94",

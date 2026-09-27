@@ -150,6 +150,15 @@ pub struct ImportDiagnostic {
     pub source_key: Option<String>,
 }
 
+/// Comparable source-owned definitions; excludes runtime state and credentials.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManifestResourceDiff {
+    pub resource: ManifestResource,
+    pub before: Option<serde_json::Value>,
+    pub after: Option<serde_json::Value>,
+}
+
 /// Side-effect-free reconciliation result for an authenticated Application.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -158,6 +167,8 @@ pub struct EventDispatchImportPlan {
     pub plan_token: ImportPlanToken,
     #[serde(default)]
     pub changes: Vec<ManifestResourceChange>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resource_diffs: Vec<ManifestResourceDiff>,
     #[serde(default)]
     pub resource_revisions: Vec<ResourceRevision>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -263,5 +274,16 @@ mod tests {
     fn revision_tokens_reject_empty_values() {
         assert!(ResourceRevisionToken::new("revision-7").is_ok());
         assert!(ResourceRevisionToken::new("").is_err());
+    }
+
+    #[test]
+    fn older_saved_plans_default_to_no_definition_snapshots() {
+        let plan: EventDispatchImportPlan = serde_json::from_value(serde_json::json!({
+            "manifest_digest": ManifestDigest::sha256(b"old"),
+            "plan_token": "old-plan",
+            "changes": [], "resource_revisions": []
+        }))
+        .unwrap();
+        assert!(plan.resource_diffs.is_empty());
     }
 }
