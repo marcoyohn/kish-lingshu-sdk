@@ -223,6 +223,14 @@ impl ProductBinding for ProductRuntimeBinding {
             .map_err(|error| runtime_error(error, options.request_id().clone()))
     }
 
+    async fn ensure_schedule(
+        &self,
+        _definition: kish_lingshu_event_dispatch_contract::ScheduleDefinition,
+        options: MutationOptions,
+    ) -> Result<kish_lingshu_event_dispatch_contract::ScheduleReceipt, Error> {
+        Err(unsupported_client_operation(options.request()))
+    }
+
     async fn publish_event(
         &self,
         event: PublishEvent,

@@ -45,6 +45,11 @@ pub(crate) type WorkflowEventStream =
 /// principal, while construction selects HTTP or an in-process runtime.
 #[async_trait]
 pub(crate) trait ProductBinding: Send + Sync {
+    async fn ensure_schedule(
+        &self,
+        definition: kish_lingshu_event_dispatch_contract::ScheduleDefinition,
+        options: MutationOptions,
+    ) -> Result<kish_lingshu_event_dispatch_contract::ScheduleReceipt, Error>;
     fn name(&self) -> &'static str;
 
     async fn authenticated_user(&self, options: RequestOptions)

@@ -27,6 +27,9 @@ mod consumer_node;
 mod declaration;
 mod reliable;
 mod scope;
+pub use kish_lingshu_event_dispatch_contract::{
+    ScheduleDefinition, ScheduleReceipt, ScheduleTrigger,
+};
 pub use scope::EventPublicationScope;
 
 #[cfg(feature = "event-consumer")]
@@ -87,6 +90,26 @@ pub struct EventDispatch {
 }
 
 impl EventDispatch {
+    /// Ensures the application-scoped named Schedule exists without changing an
+    /// existing definition or lifecycle state. Requires the atomic-create server.
+    /// Replicas use the same definition/key; no client-side scheduler is started.
+    pub async fn ensure_schedule(
+        &self,
+        definition: ScheduleDefinition,
+        options: MutationOptions,
+    ) -> Result<ScheduleReceipt, Error> {
+        if definition.name.trim().is_empty() || definition.name.chars().count() > 255 {
+            return Err(Error::configuration(
+                "schedule.name",
+                "must contain 1 to 255 characters",
+            ));
+        }
+        self.inner
+            .binding
+            .ensure_schedule(definition, options)
+            .await
+    }
+
     pub(crate) fn new(inner: Arc<ClientInner>) -> Self {
         Self { inner }
     }

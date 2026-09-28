@@ -11,11 +11,13 @@ mod declaration;
 mod event;
 mod import;
 mod manifest;
+mod schedule;
 
 pub use declaration::*;
 pub use event::*;
 pub use import::*;
 pub use manifest::*;
+pub use schedule::*;
 
 pub const INVOCATION_CONTRACT_VERSION: &str = "1.0";
 pub const IDEMPOTENCY_HEADER: &str = "Idempotency-Key";

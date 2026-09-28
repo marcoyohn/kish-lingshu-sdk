@@ -1,4 +1,5 @@
 //! Authenticated HTTP and SSE Product Runtime binding implementation.
+mod schedules;
 use kish_lingshu_runtime_contract::WorkspaceApprovalMode;
 
 use std::{
@@ -1166,6 +1167,14 @@ impl ProductBinding for HttpBinding {
             media_type: upload.media_type,
             extensions: Default::default(),
         })
+    }
+
+    async fn ensure_schedule(
+        &self,
+        definition: kish_lingshu_event_dispatch_contract::ScheduleDefinition,
+        options: MutationOptions,
+    ) -> Result<kish_lingshu_event_dispatch_contract::ScheduleReceipt, Error> {
+        self.ensure_schedule_http(definition, options).await
     }
 
     async fn publish_event(
