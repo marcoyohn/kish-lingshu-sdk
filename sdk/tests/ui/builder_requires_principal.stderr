@@ -1,0 +1,13 @@
+error[E0599]: the method `connect` exists for struct `ClientBuilder<NoPrincipal>`, but its trait bounds were not satisfied
+ --> tests/ui/builder_requires_principal.rs:4:78
+  |
+4 |     let _ = ClientBuilder::new(ClientConfig::new("https://lingshu.example")).connect();
+  |                                                                              ^^^^^^^ method cannot be called on `ClientBuilder<NoPrincipal>` due to unsatisfied trait bounds
+  |
+ ::: src/client.rs
+  |
+  | pub struct NoPrincipal;
+  | ---------------------- doesn't satisfy `NoPrincipal: Principal`
+  |
+  = note: the following trait bounds were not satisfied:
+          `NoPrincipal: Principal`

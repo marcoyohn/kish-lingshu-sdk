@@ -1,0 +1,75 @@
+{
+  "manifest_digest": {
+    "algorithm": "sha256",
+    "value": "311649f8cf70415911c2df5687aad6c7d8bab1316bf1842e57c4b33ec3431450"
+  },
+  "plan_token": "plan-orders-1",
+  "changes": [
+    {
+      "change": "create",
+      "resource": {
+        "kind": "event_definition",
+        "source_key": "orders.created"
+      }
+    },
+    {
+      "change": "update",
+      "resource": {
+        "kind": "consumer_group",
+        "source_key": "order-workers",
+        "target_id": "group-3101"
+      }
+    },
+    {
+      "change": "unchanged",
+      "resource": {
+        "kind": "topic",
+        "source_key": "orders",
+        "target_id": "topic-2101"
+      }
+    },
+    {
+      "change": "conflict",
+      "resource": {
+        "kind": "subscription",
+        "source_key": "orders.on-created",
+        "target_id": "subscription-4101"
+      },
+      "code": "manual_owner",
+      "message": "resource is manually managed"
+    },
+    {
+      "change": "missing",
+      "resource": {
+        "kind": "schedule",
+        "source_key": "orders.legacy-job",
+        "target_id": "schedule-5100"
+      }
+    }
+  ],
+  "resource_revisions": [
+    {
+      "resource": {
+        "kind": "event_definition",
+        "source_key": "orders.created"
+      },
+      "observed": {
+        "state": "absent"
+      }
+    },
+    {
+      "resource": {
+        "kind": "consumer_group",
+        "source_key": "order-workers",
+        "target_id": "group-3101"
+      },
+      "observed": {
+        "state": "present",
+        "token": "revision-7"
+      }
+    }
+  ],
+  "required_environment_bindings": [
+    "orders-consumer-target"
+  ]
+}

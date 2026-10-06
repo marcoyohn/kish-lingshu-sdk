@@ -1,0 +1,17 @@
+[
+  {
+    "code": "invalid_request",
+    "message": "the request payload is invalid",
+    "retryable": false,
+    "details": {
+      "field": "workflow_id"
+    },
+    "request_id": "request-invalid-1"
+  },
+  {
+    "code": "future_domain.limit_changed",
+    "message": "a newer server returned an unknown problem",
+    "retryable": true,
+    "request_id": "request-future-1"
+  }
+]

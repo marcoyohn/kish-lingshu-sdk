@@ -1,0 +1,12 @@
+error: event_job requires exactly one cron, interval_milliseconds, or once trigger
+  --> tests/ui/job_conflicting_triggers.rs:14:1
+   |
+14 | / #[event_job(
+15 | |     key = "orders.expire",
+16 | |     event = ExpireOrders,
+17 | |     cron = "0 0 * * * *",
+18 | |     once = "2030-01-01T00:00:00Z"
+19 | | )]
+   | |__^
+   |
+   = note: this error originates in the attribute macro `event_job` (in Nightly builds, run with -Z macro-backtrace for more info)

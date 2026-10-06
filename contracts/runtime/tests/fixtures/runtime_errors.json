@@ -1,0 +1,36 @@
+{
+  "invalid_request": {
+    "http_status": 400,
+    "body": {
+      "code": "invalid_request",
+      "message": "invalid Last-Event-ID",
+      "retryable": false
+    }
+  },
+  "stale_generation": {
+    "http_status": 410,
+    "body": {
+      "code": "replay_unavailable",
+      "message": "cursor belongs to another run generation",
+      "retryable": false,
+      "details": {
+        "workflow_instance_id": 9001,
+        "oldest_cursor": "run-9001:20",
+        "latest_cursor": "run-9001:73"
+      }
+    }
+  },
+  "replay_buffer_gap": {
+    "http_status": 410,
+    "body": {
+      "code": "replay_unavailable",
+      "message": "cursor is older than retained events",
+      "retryable": false,
+      "details": {
+        "workflow_instance_id": 9001,
+        "oldest_cursor": "run-9001:20",
+        "latest_cursor": "run-9001:73"
+      }
+    }
+  }
+}

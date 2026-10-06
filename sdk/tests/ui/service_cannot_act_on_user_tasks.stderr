@@ -1,0 +1,5 @@
+error[E0599]: no method named `claim` found for struct `ApplicationUserTasks` in the current scope
+ --> tests/ui/service_cannot_act_on_user_tasks.rs:5:19
+  |
+5 |     let _ = tasks.claim();
+  |                   ^^^^^ method not found in `ApplicationUserTasks`

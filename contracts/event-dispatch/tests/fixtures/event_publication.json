@@ -1,0 +1,59 @@
+{
+  "publish": {
+    "topic": "orders",
+    "event_type": "order.created",
+    "schema_version": "1",
+    "payload": {
+      "order_id": 42
+    },
+    "source": "checkout",
+    "subject": "order/42",
+    "partition_key": "customer/7",
+    "correlation_id": "correlation-order-42",
+    "headers": {
+      "tenant": "north"
+    },
+    "delivery": {
+      "type": "after",
+      "delay": 5000
+    }
+  },
+  "record": {
+    "event_id": 8101,
+    "topic": "orders",
+    "event_type": "order.created",
+    "schema_version": "1",
+    "payload": {
+      "order_id": 42
+    },
+    "source": "checkout",
+    "subject": "order/42",
+    "occurred_at": "2026-09-06T08:00:00Z",
+    "published_at": "2026-09-06T08:00:01Z",
+    "visible_at": "2026-09-06T08:00:06Z",
+    "partition_key": "customer/7",
+    "correlation_id": "correlation-order-42",
+    "headers": {
+      "tenant": "north"
+    },
+    "visibility": "delayed"
+  },
+  "receipt": {
+    "request_id": "request-publish-1",
+    "disposition": "accepted",
+    "accepted_at": "2026-09-06T08:00:01Z",
+    "event_id": 8101,
+    "published_at": "2026-09-06T08:00:01Z",
+    "visible_at": "2026-09-06T08:00:06Z",
+    "visibility": "delayed"
+  },
+  "duplicate_receipt": {
+    "request_id": "request-publish-1",
+    "disposition": "duplicate",
+    "accepted_at": "2026-09-06T08:00:01Z",
+    "event_id": 8101,
+    "published_at": "2026-09-06T08:00:01Z",
+    "visible_at": "2026-09-06T08:00:06Z",
+    "visibility": "delayed"
+  }
+}

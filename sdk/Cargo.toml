@@ -1,0 +1,116 @@
+[package]
+name = "kish-lingshu-sdk"
+version = "0.2.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Rust SDK for Kish Lingshu application integrations"
+
+[features]
+default = ["http-client"]
+http-client = [
+  "dep:async-stream",
+  "dep:base64",
+  "dep:bytes",
+  "dep:futures-util",
+  "dep:http",
+  "dep:httpdate",
+  "dep:percent-encoding",
+  "dep:rand",
+  "dep:reqwest",
+  "dep:rustls",
+  "dep:tokio",
+]
+event-manifest = [
+  "dep:chrono-tz",
+  "dep:cron",
+  "dep:inventory",
+  "dep:jsonschema",
+  "dep:kish-lingshu-sdk-macros",
+  "dep:schemars",
+]
+event-consumer = ["event-manifest"]
+event-consumer-zenoh = ["event-consumer", "service-zenoh", "kish-lingshu-event-dispatch-contract/service-transport"]
+event-publication-zenoh = ["service-zenoh", "http-client", "kish-lingshu-event-dispatch-contract/service-transport"]
+event-consumer-http = [
+  "event-consumer",
+  "service-auth",
+  "dep:axum",
+  "dep:reqwest",
+  "dep:rustls",
+  "dep:tokio",
+]
+service-auth = ["service-auth-core", "dep:axum"]
+# Outbound bootstrap/trust/role authority without an inbound HTTP adapter.
+service-auth-core = [
+  "dep:percent-encoding",
+  "dep:reqwest",
+  "dep:rustls",
+  "dep:tokio",
+  "kish-lingshu-foundation-contract/service-auth",
+]
+# HTTPS credential preparation only; does not enable a business transport or listener.
+service-channel = ["service-auth-core", "kish-lingshu-runtime-contract/service-transport", "dep:rcgen"]
+# Finite outbound TLS sessions only; route/role activation remains separate.
+service-zenoh = ["service-channel", "dep:base64", "dep:metrics", "dep:zenoh", "dep:tracing", "dep:tracing-subscriber"]
+# Explicit finite Call bindings; Async additionally requires enable_async_calls.
+service-call-zenoh = ["service-zenoh", "service-execution"]
+user-task-completion = [
+  "dep:inventory",
+  "dep:jsonschema",
+  "dep:kish-lingshu-sdk-macros",
+  "dep:schemars",
+]
+service-manifest = ["user-task-completion", "dep:inventory", "dep:jsonschema", "dep:schemars", "dep:kish-lingshu-sdk-macros"]
+service-event-http = ["service-http", "event-consumer-http"]
+service-execution = ["service-manifest", "service-auth-core"]
+service-http = ["service-execution", "service-auth", "dep:axum", "dep:tokio", "dep:reqwest"]
+test-support = ["kish-lingshu-runtime-contract/test-support"]
+
+[dependencies]
+async-stream = { workspace = true, optional = true }
+async-trait = { workspace = true }
+axum = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+chrono = { workspace = true }
+chrono-tz = { workspace = true, optional = true }
+cron = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
+futures = { workspace = true }
+http = { workspace = true, optional = true }
+httpdate = { workspace = true, optional = true }
+inventory = { workspace = true, optional = true }
+jsonschema = { workspace = true, optional = true }
+kish-lingshu-event-dispatch-contract = { workspace = true }
+kish-lingshu-foundation-contract = { workspace = true }
+kish-lingshu-runtime-contract = { workspace = true }
+kish-lingshu-sdk-macros = { path = "macros", version = "=0.2.0", optional = true }
+metrics = { workspace = true, optional = true }
+percent-encoding = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+rcgen = { version = "=0.14.7", default-features = false, features = ["crypto", "ring", "pem"], optional = true }
+reqwest = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+schemars = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, optional = true }
+url = { workspace = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+uuid = { workspace = true }
+zenoh = { version = "=1.10.1", default-features = false, features = ["transport_tcp", "transport_tls"], optional = true }
+
+[dev-dependencies]
+kish-lingshu-runtime-contract = { workspace = true, features = ["test-support"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+tower = "0.5"
+trybuild = "1"
+
+[[example]]
+name = "native-application"
+path = "examples/native_application.rs"
+required-features = ["service-call-zenoh", "event-consumer-zenoh", "event-publication-zenoh"]

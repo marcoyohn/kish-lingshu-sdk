@@ -1,0 +1,89 @@
+{
+  "format": "kish-lingshu.event-dispatch",
+  "version": 1,
+  "producer": {
+    "package_name": "orders-app",
+    "package_version": "1.2.3"
+  },
+  "environment_bindings": [
+    {
+      "key": "orders-consumer-target",
+      "kind": "consumer_invocation",
+      "description": "Orders consumer deployment binding"
+    }
+  ],
+  "events": [
+    {
+      "key": "orders.created",
+      "topic": "orders",
+      "event_type": "order.created",
+      "schema_version": "1",
+      "description": "An order was accepted",
+      "payload_schema": {
+        "properties": {
+          "order_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "order_id"
+        ],
+        "type": "object"
+      },
+      "topic_defaults": {
+        "name": "Orders",
+        "description": "Order lifecycle events",
+        "partition_count": 8,
+        "consumption_order": "partition_ordered"
+      }
+    },
+    {
+      "key": "orders.expiration-requested",
+      "topic": "orders",
+      "event_type": "order.expiration.requested",
+      "schema_version": "1",
+      "payload_schema": {
+        "properties": {
+          "order_id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "order_id"
+        ],
+        "type": "object"
+      },
+      "topic_defaults": {
+        "name": "Orders",
+        "description": "Order lifecycle events",
+        "partition_count": 8,
+        "consumption_order": "partition_ordered"
+      }
+    }
+  ],
+  "consumers": [],
+  "jobs": [
+    {
+      "key": "orders.expire",
+      "trigger": {
+        "type": "cron",
+        "expression": "0 */5 * * * *",
+        "timezone": "UTC"
+      },
+      "event": {
+        "event_key": "orders.expiration-requested",
+        "source": "orders-scheduler",
+        "payload": {
+          "order_id": 42
+        }
+      },
+      "misfire_policy": "fire_once",
+      "misfire_batch_cap": 1,
+      "overlap_policy": "serialize"
+    }
+  ],
+  "digest": {
+    "algorithm": "sha256",
+    "value": "311649f8cf70415911c2df5687aad6c7d8bab1316bf1842e57c4b33ec3431450"
+  }
+}
