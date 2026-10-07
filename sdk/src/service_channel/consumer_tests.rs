@@ -437,3 +437,70 @@ async fn consumer_observation_fixture() {
     assert_eq!(f.budget.semaphore.available_permits(), 1);
     f.core.connection.shutdown().await;
 }
+
+#[tokio::test]
+async fn signed_consumer_skew_keeps_group_execution_replay_and_role_deadline_fenced() {
+    let f = fixture(1).await;
+    let platform = ServiceSigner::new(&[73; 32]).unwrap();
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+    let signer = ChannelMessageSigner::from_pkcs8(&key.serialize_der()).unwrap();
+    let initial = authority(&platform, &signer);
+    let ep = endpoint();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut registry = ConsumerRegistry::new("app").unwrap();
+    registry
+        .register(Handler {
+            group: "chosen",
+            calls: calls.clone(),
+        })
+        .unwrap();
+    let binding = NativeConsumerExecution::test_binding(Arc::new(registry), f.budget.clone(), 1);
+    let mut expected_calls = 0;
+    for (offset, ttl, role_lifetime, accepted) in [
+        (1_000, NATIVE_CONSUMER_TIMEOUT_MS, 60_000, true),
+        (-1_000, NATIVE_CONSUMER_TIMEOUT_MS + 1, 60_000, false),
+        (6_000, 1_000, 60_000, false),
+        (1_000, NATIVE_CONSUMER_TIMEOUT_MS, 5_000, false),
+    ] {
+        let now = chrono::Utc::now().timestamp_millis();
+        let mut delivery = input(&ep);
+        delivery.invocation.consumption.invocation_deadline =
+            chrono::DateTime::from_timestamp_millis(now + offset + ttl).unwrap();
+        let mut req = signed(&platform, &ep, &delivery);
+        super::super::call::tests::resign_request(&platform, &mut req, now + offset, ttl);
+        let bytes = req.encode(now).unwrap();
+        let reply = binding
+            .reply(
+                &ep,
+                &req.target,
+                &bytes,
+                now + role_lifetime,
+                &f.core.connection,
+                &initial,
+                &signer,
+            )
+            .await;
+        assert_eq!(reply.is_ok(), accepted, "offset={offset} ttl={ttl}");
+        if let Ok(reply) = reply {
+            expected_calls += 1;
+            assert!(matches!(
+                decode(&reply, &req, &signer, &initial),
+                NativeConsumerResponse::Completed { .. }
+            ));
+            assert!(binding
+                .reply(
+                    &ep,
+                    &req.target,
+                    &bytes,
+                    now + role_lifetime,
+                    &f.core.connection,
+                    &initial,
+                    &signer
+                )
+                .await
+                .is_err());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), expected_calls);
+    }
+    f.core.connection.shutdown().await;
+}

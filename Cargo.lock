@@ -1598,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "kish-lingshu-event-dispatch-contract"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "kish-lingshu-foundation-contract",
@@ -1610,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "kish-lingshu-event-publication-sqlx"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1625,7 +1625,7 @@ dependencies = [
 
 [[package]]
 name = "kish-lingshu-foundation-contract"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "base64",
  "chrono",
@@ -1638,7 +1638,7 @@ dependencies = [
 
 [[package]]
 name = "kish-lingshu-runtime-contract"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1654,7 +1654,7 @@ dependencies = [
 
 [[package]]
 name = "kish-lingshu-sdk"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1699,7 +1699,7 @@ dependencies = [
 
 [[package]]
 name = "kish-lingshu-sdk-macros"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",

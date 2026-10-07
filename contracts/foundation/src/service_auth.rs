@@ -57,6 +57,31 @@ pub struct TransportMessageClaims {
     pub deadline_unix_ms: i64,
 }
 
+#[cfg(feature = "service-transport")]
+impl TransportMessageClaims {
+    /// Apply a request-specific lifetime cap to already verified claims.
+    /// Clock skew is independent of sender lifetime; absolute expiration and
+    /// caller-owned role/phase deadlines must never be extended.
+    pub fn validate_request_time(
+        &self,
+        now_unix_ms: i64,
+        maximum_lifetime_ms: i64,
+    ) -> Result<(), ServiceAuthError> {
+        use crate::service_transport::bootstrap::MAX_BOOTSTRAP_CLOCK_SKEW_MS;
+        if now_unix_ms < 0
+            || maximum_lifetime_ms <= 0
+            || self.issued_at_unix_ms < 0
+            || self.issued_at_unix_ms > now_unix_ms.saturating_add(MAX_BOOTSTRAP_CLOCK_SKEW_MS)
+            || self.deadline_unix_ms <= now_unix_ms
+            || self.deadline_unix_ms <= self.issued_at_unix_ms
+            || self.deadline_unix_ms.saturating_sub(self.issued_at_unix_ms) > maximum_lifetime_ms
+        {
+            return Err(ServiceAuthError);
+        }
+        Ok(())
+    }
+}
+
 /// Compared against the host's native admission receipt, never payload identity.
 #[cfg(feature = "service-transport")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -696,6 +721,97 @@ mod transport_tests {
     }
     fn request() -> RouteIdentity {
         RouteIdentity::new("req-1").unwrap()
+    }
+
+    #[test]
+    fn signed_request_lifetime_is_independent_of_receiver_clock_and_never_extends_expiry() {
+        let platform = ServiceSigner::new(&[7; 32]).unwrap();
+        let trust = platform.transport_trust("app-a", NOW / 1000).unwrap();
+        let bytes = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+        let client = ChannelMessageSigner::from_pkcs8(bytes.as_ref()).unwrap();
+        let identity = ClientChannelIdentity {
+            application_id: RouteIdentity::new("app-a").unwrap(),
+            instance_id: RouteIdentity::new("instance").unwrap(),
+            base_generation: RouteIdentity::new("base").unwrap(),
+            certificate_identity: RouteIdentity::new("certificate").unwrap(),
+        };
+        // Both request directions and every native receiver lifetime policy.
+        for (kind, maximum) in [
+            (MessageKind::Register, 10_000),
+            (MessageKind::CatalogRead, 10_000),
+            (MessageKind::InvokeCall, 10_000),
+            (MessageKind::InvokeEvent, 30_000),
+            (MessageKind::PublishEvent, 10_000),
+            (MessageKind::CompleteCall, 3_000),
+            (MessageKind::CallHeartbeat, 3_000),
+            (MessageKind::BindLane, 5_000),
+        ] {
+            for (offset, ttl, accepted) in [
+                (2, maximum, true),
+                (5_000, maximum, true),
+                (-2, maximum, true),
+                (0, maximum + 1, false),
+                (-2, maximum + 1, false),
+                (5_001, 1_000, false),
+            ] {
+                let issued = NOW + offset;
+                let deadline = issued + ttl;
+                let proof = platform
+                    .sign_transport_message(
+                        "app-a",
+                        kind,
+                        &target(),
+                        &request(),
+                        b"payload",
+                        issued,
+                        deadline,
+                    )
+                    .unwrap();
+                let platform_claims = verify_transport_message(
+                    &trust,
+                    &proof,
+                    "app-a",
+                    kind,
+                    &target(),
+                    &request(),
+                    b"payload",
+                    NOW,
+                )
+                .unwrap();
+                let proof = client
+                    .sign_message(
+                        &identity,
+                        kind,
+                        &target(),
+                        &request(),
+                        b"payload",
+                        issued,
+                        deadline,
+                    )
+                    .unwrap();
+                let client_claims = verify_client_transport_message(
+                    client.public_key(),
+                    &identity,
+                    &proof,
+                    kind,
+                    &target(),
+                    &request(),
+                    b"payload",
+                    NOW,
+                )
+                .unwrap();
+                for claims in [platform_claims, client_claims] {
+                    assert_eq!(
+                        claims.validate_request_time(NOW, maximum).is_ok(),
+                        accepted,
+                        "kind={kind:?} offset={offset} ttl={ttl}"
+                    );
+                    assert!(claims.validate_request_time(deadline, maximum).is_err());
+                    assert!(claims.validate_request_time(NOW, 0).is_err());
+                    assert!(claims.validate_request_time(-1, maximum).is_err());
+                }
+            }
+        }
     }
 
     #[test]

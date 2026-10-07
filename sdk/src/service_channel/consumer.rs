@@ -65,8 +65,11 @@ impl NativeConsumerExecution {
         }
         let request = TransportEnvelope::decode(bytes, target, &initial.application_id, now)
             .map_err(|_| ChannelSessionError::InvalidResponse)?;
-        connection
+        let claims = connection
             .verify_channel_message(&initial.transport_trust, &request)
+            .map_err(|_| ChannelSessionError::InvalidResponse)?;
+        claims
+            .validate_request_time(now, NATIVE_CONSUMER_TIMEOUT_MS)
             .map_err(|_| ChannelSessionError::InvalidResponse)?;
         let input: NativeConsumerRequest = serde_json::from_str(request.payload.get())
             .map_err(|_| ChannelSessionError::InvalidResponse)?;
@@ -81,7 +84,6 @@ impl NativeConsumerExecution {
         };
         if request.kind != MessageKind::InvokeEvent
             || request.deadline_unix_ms > expires
-            || request.deadline_unix_ms > now + NATIVE_CONSUMER_TIMEOUT_MS
             || input.route_revision != *route_revision
             || !lanes.contains(&input.lane)
             || route.invoke_key(&input.lane).ok().as_ref() != Some(target)

@@ -61,17 +61,9 @@ pub(super) fn validate_challenge_time(
     claims: &TransportMessageClaims,
     now: i64,
 ) -> Result<(), ChannelSessionError> {
-    if claims.issued_at_unix_ms > now.saturating_add(MAX_BOOTSTRAP_CLOCK_SKEW_MS)
-        || claims.deadline_unix_ms <= now
-        || claims.deadline_unix_ms <= claims.issued_at_unix_ms
-        || claims
-            .deadline_unix_ms
-            .saturating_sub(claims.issued_at_unix_ms)
-            > ROUTE_PROBE_TIMEOUT_MS
-    {
-        return Err(ChannelSessionError::InvalidResponse);
-    }
-    Ok(())
+    claims
+        .validate_request_time(now, ROUTE_PROBE_TIMEOUT_MS)
+        .map_err(|_| ChannelSessionError::InvalidResponse)
 }
 
 pub(super) fn sign_reply(

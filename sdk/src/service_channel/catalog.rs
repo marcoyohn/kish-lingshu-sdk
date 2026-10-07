@@ -1,14 +1,16 @@
 //! Immutable, bounded Provider snapshot on the role's existing native owner.
 use super::ChannelSessionError;
 use kish_lingshu_foundation_contract::{
-    service_auth::{ChannelMessageSigner, ClientChannelIdentity},
+    service_auth::{ChannelMessageSigner, ClientChannelIdentity, TransportMessageClaims},
     service_transport::{
-        bootstrap::ChannelBootstrapResponse, ExactRouteKey, MessageKind, ServiceEndpoint,
-        TransportEnvelope,
+        bootstrap::{ChannelBootstrapResponse, MAX_BOOTSTRAP_CLOCK_SKEW_MS},
+        ExactRouteKey, MessageKind, ServiceEndpoint, TransportEnvelope,
     },
 };
 use kish_lingshu_runtime_contract::provider::{ProviderCatalog, ProviderCatalogRead};
 use std::sync::Arc;
+
+const CATALOG_READ_TIMEOUT_MS: i64 = 10_000;
 
 pub(super) struct CatalogSnapshot {
     pub digest: String,
@@ -78,7 +80,8 @@ fn validate_read(
     let read: ProviderCatalogRead = serde_json::from_str(request.payload.get())
         .map_err(|_| ChannelSessionError::InvalidResponse)?;
     if request.kind != MessageKind::CatalogRead
-        || request.deadline_unix_ms > now.saturating_add(10_000)
+        || request.deadline_unix_ms
+            > now.saturating_add(CATALOG_READ_TIMEOUT_MS + MAX_BOOTSTRAP_CLOCK_SKEW_MS)
         || request.deadline_unix_ms > role_expires_at_ms
         || read.provider_key != snapshot.provider
         || read.release != snapshot.release
@@ -90,6 +93,17 @@ fn validate_read(
         return Err(ChannelSessionError::InvalidResponse);
     }
     Ok(request)
+}
+
+// Validate the authenticated sender's duration separately from receiver clock
+// skew, as for BindLane. Role expiry and the absolute deadline remain strict.
+fn validate_read_time(
+    claims: &TransportMessageClaims,
+    now: i64,
+) -> Result<(), ChannelSessionError> {
+    claims
+        .validate_request_time(now, CATALOG_READ_TIMEOUT_MS)
+        .map_err(|_| ChannelSessionError::InvalidResponse)
 }
 
 pub(super) fn reply(
@@ -107,9 +121,10 @@ pub(super) fn reply(
     let ServiceEndpoint::Zenoh { route, .. } = endpoint else {
         return Err(ChannelSessionError::InvalidConfig);
     };
-    connection
+    let claims = connection
         .verify_channel_message(&initial.transport_trust, &request)
         .map_err(|_| ChannelSessionError::InvalidResponse)?;
+    validate_read_time(&claims, now)?;
     let subject = ClientChannelIdentity {
         application_id: initial.application_id.clone(),
         instance_id: route.instance_id.clone(),
@@ -180,7 +195,7 @@ mod tests {
         use rcgen::{KeyPair, PKCS_ED25519};
         let platform = ServiceSigner::new(&[42; 32]).unwrap();
         let key = KeyPair::generate_for(&PKCS_ED25519).unwrap();
-        let signer = ChannelMessageSigner::from_pkcs8(&key.serialize_der()).unwrap();
+        let signer = Arc::new(ChannelMessageSigner::from_pkcs8(&key.serialize_der()).unwrap());
         let trust = platform
             .transport_trust("app", chrono::Utc::now().timestamp())
             .unwrap();
@@ -244,7 +259,7 @@ mod tests {
             request_id: request_id.clone(),
             application_id: id("app"),
             target: target.clone(),
-            deadline_unix_ms: now + 1000,
+            deadline_unix_ms: now + CATALOG_READ_TIMEOUT_MS + 1_000,
             proof: platform
                 .sign_transport_message(
                     "app",
@@ -252,8 +267,8 @@ mod tests {
                     &target,
                     &request_id,
                     payload.get().as_bytes(),
-                    now,
-                    now + 1000,
+                    now + 1_000,
+                    now + CATALOG_READ_TIMEOUT_MS + 1_000,
                 )
                 .unwrap(),
             trace_parent: Some(parent.into()),
@@ -264,7 +279,7 @@ mod tests {
             &endpoint,
             &target,
             &request.encode(now).unwrap(),
-            now + 2000,
+            now + 20_000,
             now,
         )
         .unwrap();
@@ -285,6 +300,42 @@ mod tests {
             base_generation: route.base_generation.clone(),
             certificate_identity: id("certificate"),
         };
+        #[cfg(feature = "service-call-zenoh")]
+        let bytes = {
+            let f = crate::services::execution::tests::fixture(1).await;
+            let initial = super::super::call::tests::authority(&platform, &signer);
+            let request_bytes = request.encode(now).unwrap();
+            let bytes = reply(
+                &snapshot,
+                &endpoint,
+                &target,
+                &request_bytes,
+                now + 20_000,
+                &f.core.connection,
+                &initial,
+                &signer,
+                now,
+            )
+            .unwrap();
+            assert!(
+                reply(
+                    &snapshot,
+                    &endpoint,
+                    &target,
+                    &request_bytes,
+                    now + 20_000,
+                    &f.core.connection,
+                    &initial,
+                    &signer,
+                    now
+                )
+                .is_err(),
+                "catalog replay remains rejected"
+            );
+            f.core.connection.shutdown().await;
+            bytes
+        };
+        #[cfg(not(feature = "service-call-zenoh"))]
         let bytes = sign_reply(&snapshot, &subject, &signer, checked, now).unwrap();
         let response = TransportEnvelope::decode(&bytes, &target, &id("app"), now).unwrap();
         assert_eq!(response.payload.get(), snapshot.payload.get());
@@ -428,7 +479,19 @@ mod tests {
             now
         )
         .is_err());
-        request.deadline_unix_ms = now + 10_001;
+        // A two-millisecond clock offset must not reject the platform's
+        // ten-second request before checking its signed sender timestamp.
+        request.deadline_unix_ms = now + CATALOG_READ_TIMEOUT_MS + 2;
+        assert!(validate_read(
+            &snapshot,
+            &endpoint,
+            &target,
+            &request.encode(now).unwrap(),
+            now + 20_000,
+            now
+        )
+        .is_ok());
+        request.deadline_unix_ms = now + CATALOG_READ_TIMEOUT_MS + MAX_BOOTSTRAP_CLOCK_SKEW_MS + 1;
         assert!(validate_read(
             &snapshot,
             &endpoint,
@@ -447,6 +510,57 @@ mod tests {
             now
         )
         .is_err());
+    }
+
+    #[test]
+    fn signed_catalog_time_accepts_bounded_skew_without_extending_sender_ttl() {
+        use kish_lingshu_foundation_contract::{
+            service_auth::{verify_transport_message, ServiceSigner},
+            service_transport::RouteIdentity,
+        };
+        let now = 1_800_000_000_000;
+        let signer = ServiceSigner::new(&[42; 32]).unwrap();
+        let trust = signer.transport_trust("app", now / 1000).unwrap();
+        let target = ExactRouteKey::new("ls/v1/test/catalog/snapshot").unwrap();
+        let request_id = RouteIdentity::new("catalog-clock-regression").unwrap();
+        for (offset, ttl, expected) in [
+            (2, 10_000, true),
+            (5_000, 10_000, true),
+            (-2, 10_000, true),
+            (0, 10_001, false),
+            (-2, 10_001, false),
+            (5_001, 1_000, false),
+        ] {
+            let issued = now + offset;
+            let proof = signer
+                .sign_transport_message(
+                    "app",
+                    MessageKind::CatalogRead,
+                    &target,
+                    &request_id,
+                    b"{}",
+                    issued,
+                    issued + ttl,
+                )
+                .unwrap();
+            let claims = verify_transport_message(
+                &trust,
+                &proof,
+                "app",
+                MessageKind::CatalogRead,
+                &target,
+                &request_id,
+                b"{}",
+                now,
+            )
+            .unwrap();
+            assert_eq!(
+                validate_read_time(&claims, now).is_ok(),
+                expected,
+                "offset={offset} ttl={ttl}"
+            );
+            assert!(validate_read_time(&claims, claims.deadline_unix_ms).is_err());
+        }
     }
 
     async fn assert_failed(response: reqwest::Response) {
@@ -572,7 +686,13 @@ mod tests {
             ready.role_readiness,
             ProviderRoleReadiness::NativeReadConfigured
         );
-        assert!(ready.observed_at_ms <= chrono::Utc::now().timestamp_millis());
+        // Discovery observations use the server's clock, which can be ahead
+        // of this client's clock within the existing cross-host skew bound.
+        assert!(ready.observed_at_ms > 0);
+        assert!(
+            ready.observed_at_ms
+                <= chrono::Utc::now().timestamp_millis() + MAX_BOOTSTRAP_CLOCK_SKEW_MS
+        );
         let wire: serde_json::Value = get()
             .await
             .unwrap()

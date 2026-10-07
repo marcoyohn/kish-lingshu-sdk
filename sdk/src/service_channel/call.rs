@@ -8,8 +8,9 @@ use crate::{services::*, ServiceConnection, ServiceExecutionBudget};
 use kish_lingshu_foundation_contract::{
     service_auth::{ChannelMessageSigner, ClientChannelIdentity},
     service_transport::{
-        bootstrap::ChannelBootstrapResponse, CallReportRoute, ExactRouteKey, MessageKind,
-        ProtocolVersion, RouteIdentity, ServiceEndpoint, TransportEnvelope,
+        bootstrap::{ChannelBootstrapResponse, MAX_BOOTSTRAP_CLOCK_SKEW_MS},
+        CallReportRoute, ExactRouteKey, MessageKind, ProtocolVersion, RouteIdentity,
+        ServiceEndpoint, TransportEnvelope,
     },
 };
 use std::{
@@ -255,7 +256,8 @@ impl NativeCallExecution {
             || route.base_generation.as_str() != initial.instance.generation
             || route.role_generation.as_str() != self.target.generation
             || envelope.deadline_unix_ms > expires
-            || envelope.deadline_unix_ms > now + NATIVE_SYNC_CALL_TIMEOUT_MS
+            || envelope.deadline_unix_ms
+                > now.saturating_add(NATIVE_SYNC_CALL_TIMEOUT_MS + MAX_BOOTSTRAP_CLOCK_SKEW_MS)
         {
             return Err(ChannelSessionError::InvalidResponse);
         }
@@ -270,8 +272,11 @@ impl NativeCallExecution {
         ) {
             return Err(ChannelSessionError::InvalidResponse);
         }
-        connection
+        let claims = connection
             .verify_channel_message(&initial.transport_trust, &envelope)
+            .map_err(|_| ChannelSessionError::InvalidResponse)?;
+        claims
+            .validate_request_time(now, NATIVE_SYNC_CALL_TIMEOUT_MS)
             .map_err(|_| ChannelSessionError::InvalidResponse)?;
         super::trace::scope(envelope.trace_parent.as_deref(), async {
             #[cfg(test)]

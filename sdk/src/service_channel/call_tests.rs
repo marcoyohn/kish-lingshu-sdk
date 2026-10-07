@@ -566,3 +566,98 @@ async fn async_readiness_requires_explicit_binding_current_target_and_running_ro
     }
     session.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn signed_call_accepts_sender_skew_but_rejects_overlong_duration_and_role_expiry() {
+    let f = fixture(1).await;
+    let platform = ServiceSigner::new(&[73; 32]).unwrap();
+    let key = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+    let signer = ChannelMessageSigner::from_pkcs8(&key.serialize_der()).unwrap();
+    let initial = authority(&platform, &signer);
+    let ep = endpoint();
+    let binding = NativeCallExecution {
+        received_lanes: Default::default(),
+        core: f.core.clone(),
+        faults: Default::default(),
+        stop: f.stop.clone(),
+        enrollment: f.registration.clone(),
+        target: ServiceInstanceTarget {
+            node_id: "node".into(),
+            generation: "generation".into(),
+        },
+        async_reports: None,
+        handoff: AtomicBool::new(false),
+    };
+    for (offset, ttl, role_lifetime, accepted) in [
+        (1_000, NATIVE_SYNC_CALL_TIMEOUT_MS, 30_000, true),
+        (-1_000, NATIVE_SYNC_CALL_TIMEOUT_MS + 1, 30_000, false),
+        (6_000, 1_000, 30_000, false),
+        (1_000, NATIVE_SYNC_CALL_TIMEOUT_MS, 5_000, false),
+    ] {
+        let mut req = request(
+            &platform,
+            &ep,
+            NativeCallAction::Readiness {
+                target_instance: binding.target.clone(),
+            },
+        );
+        let now = chrono::Utc::now().timestamp_millis();
+        resign_request(&platform, &mut req, now + offset, ttl);
+        let bytes = req.encode(now).unwrap();
+        let reply = binding
+            .reply(
+                &ep,
+                &req.target,
+                &bytes,
+                now + role_lifetime,
+                &f.core.connection,
+                &initial,
+                &signer,
+            )
+            .await;
+        assert_eq!(reply.is_ok(), accepted, "offset={offset} ttl={ttl}");
+        if let Ok(reply) = reply {
+            assert!(matches!(
+                output(&reply, &req, &signer),
+                NativeCallResponse::Ready
+            ));
+            assert!(
+                binding
+                    .reply(
+                        &ep,
+                        &req.target,
+                        &bytes,
+                        now + role_lifetime,
+                        &f.core.connection,
+                        &initial,
+                        &signer
+                    )
+                    .await
+                    .is_err(),
+                "replay remains rejected"
+            );
+        }
+        assert_eq!(f.calls.load(Ordering::SeqCst), 0);
+    }
+    f.core.connection.shutdown().await;
+}
+
+pub(crate) fn resign_request(
+    platform: &ServiceSigner,
+    req: &mut TransportEnvelope,
+    issued: i64,
+    ttl: i64,
+) {
+    req.deadline_unix_ms = issued + ttl;
+    req.proof = platform
+        .sign_transport_message(
+            "app",
+            req.kind,
+            &req.target,
+            &req.request_id,
+            req.payload.get().as_bytes(),
+            issued,
+            req.deadline_unix_ms,
+        )
+        .unwrap();
+}
