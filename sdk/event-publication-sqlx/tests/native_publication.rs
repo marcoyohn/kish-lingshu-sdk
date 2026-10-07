@@ -55,7 +55,7 @@ async fn count(pool: &sqlx::SqlitePool, owner: &str, state: &str) -> i64 {
 }
 async fn pool(connection: &ServiceConnection, instance: &str) -> ServiceChannelSessions {
     connection
-        .bootstrap_channel(
+        .bootstrap_channel_with_transport(
             ServiceInstanceRegistration {
                 instance_id: instance.into(),
                 incarnation_id: format!("{instance}-boot"),
@@ -65,6 +65,13 @@ async fn pool(connection: &ServiceConnection, instance: &str) -> ServiceChannelS
                 kish_lingshu_foundation_contract::service_transport::RouteIdentity::new("dev")
                     .unwrap(),
             ),
+            if std::env::var("LINGSHU_CHANNEL_TEST_TRANSPORT").as_deref()
+                == Ok("intranet_plaintext")
+            {
+                kish_lingshu_sdk::service_channel::ChannelTransport::IntranetPlaintext
+            } else {
+                kish_lingshu_sdk::service_channel::ChannelTransport::Mtls
+            },
         )
         .await
         .unwrap()

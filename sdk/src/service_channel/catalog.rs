@@ -481,7 +481,7 @@ mod tests {
         .await
         .unwrap();
         let identity = connection
-            .bootstrap_channel(
+            .bootstrap_test_channel(
                 ServiceInstanceRegistration {
                     instance_id: "native-discovery".into(),
                     incarnation_id: "discovery-boot".into(),
@@ -743,7 +743,7 @@ mod tests {
         .await
         .unwrap();
         let identity = connection
-            .bootstrap_channel(
+            .bootstrap_test_channel(
                 ServiceInstanceRegistration {
                     instance_id: "native-import".into(),
                     incarnation_id: "import-boot".into(),
@@ -952,7 +952,7 @@ mod tests {
         .await
         .unwrap();
         let identity = connection
-            .bootstrap_channel(
+            .bootstrap_test_channel(
                 ServiceInstanceRegistration {
                     instance_id: "native-catalog".into(),
                     incarnation_id: "catalog-boot".into(),

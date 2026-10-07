@@ -1303,9 +1303,10 @@ impl ServiceChannelSessions {
                     {
                         return Err(ChannelSessionError::InvalidResponse);
                     }
-                    connection
+                    let claims = connection
                         .verify_channel_message(&initial.transport_trust, &request)
                         .map_err(|_| ChannelSessionError::InvalidResponse)?;
+                    super::route_probe::validate_challenge_time(&claims, now)?;
                     super::route_probe::sign_reply(
                         &ClientChannelIdentity {
                             application_id: initial.application_id.clone(),
@@ -2100,7 +2101,7 @@ mod tests {
             generation: None,
         };
         let identity = connection
-            .bootstrap_channel(
+            .bootstrap_test_channel(
                 registration.clone(),
                 Some(RouteIdentity::new("dev").unwrap()),
             )
@@ -2134,7 +2135,7 @@ mod tests {
         let omitted_generation = route.role_generation.as_str().to_owned();
         let original_route_deadline = role.role_deadline;
         let foreign = connection
-            .bootstrap_channel(registration, Some(RouteIdentity::new("dev").unwrap()))
+            .bootstrap_test_channel(registration, Some(RouteIdentity::new("dev").unwrap()))
             .await
             .unwrap();
         let mut foreign = foreign
@@ -2232,7 +2233,7 @@ mod tests {
         .await
         .unwrap();
         let identity = connection
-            .bootstrap_channel(
+            .bootstrap_test_channel(
                 kish_lingshu_foundation_contract::ServiceInstanceRegistration {
                     instance_id: "native-role-expiry".into(),
                     incarnation_id: "expiry-boot".into(),
@@ -2299,7 +2300,7 @@ mod tests {
         .await
         .unwrap();
         let identity = connection
-            .bootstrap_channel(
+            .bootstrap_test_channel(
                 kish_lingshu_foundation_contract::ServiceInstanceRegistration {
                     instance_id: "native-resource-component".into(),
                     incarnation_id: "finite-pressure".into(),
@@ -2463,7 +2464,7 @@ mod tests {
             generation: None,
         };
         let identity = connection
-            .bootstrap_channel(
+            .bootstrap_test_channel(
                 registration.clone(),
                 Some(RouteIdentity::new("dev").unwrap()),
             )
@@ -2492,7 +2493,7 @@ mod tests {
         let generation = response.session.generation.clone();
         let expires = response.session.lease_expires_at_ms;
         let foreign_identity = connection
-            .bootstrap_channel(
+            .bootstrap_test_channel(
                 registration.clone(),
                 Some(RouteIdentity::new("dev").unwrap()),
             )

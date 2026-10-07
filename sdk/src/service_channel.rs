@@ -3,6 +3,8 @@
 #[cfg(feature = "service-zenoh")]
 pub mod trace;
 use crate::{ServiceAuthError, ServiceConnection};
+pub use kish_lingshu_foundation_contract::service_transport::bootstrap::ChannelTransport;
+mod plaintext;
 pub use kish_lingshu_foundation_contract::service_transport::channel::{
     ChannelAuthorization, ChannelRotationFinalization,
 };
@@ -93,9 +95,10 @@ impl ServiceChannelIdentity {
 struct PreparedIdentity {
     response: ChannelBootstrapResponse,
     signer: ChannelMessageSigner,
-    // Only the optional TLS adapter can consume this material.
+    // TLS consumes this material; plaintext keeps it for the signed identity lifecycle.
     #[allow(dead_code)]
     key: KeyPair,
+    plaintext: Option<plaintext::PlaintextKey>,
 }
 impl fmt::Debug for PreparedIdentity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -106,6 +109,23 @@ impl fmt::Debug for PreparedIdentity {
     }
 }
 impl PreparedIdentity {
+    fn bind_transport(
+        mut self,
+        transport: ChannelTransport,
+        key: Option<plaintext::PlaintextKey>,
+    ) -> Result<Self, ServiceAuthError> {
+        if self
+            .response
+            .endpoints
+            .iter()
+            .any(|e| e.transport() != transport)
+            || (transport == ChannelTransport::IntranetPlaintext) != key.is_some()
+        {
+            return Err(ServiceAuthError::InvalidResponse);
+        }
+        self.plaintext = key;
+        Ok(self)
+    }
     fn accept(
         response: ChannelBootstrapResponse,
         request: &ChannelBootstrapRequest,
@@ -129,18 +149,43 @@ impl PreparedIdentity {
             response,
             signer,
             key,
+            plaintext: None,
         })
     }
 }
 
+#[cfg(test)]
 fn prepare_request(
     instance: ServiceInstanceRegistration,
     expected_deployment: Option<RouteIdentity>,
 ) -> Result<(ChannelBootstrapRequest, KeyPair), ServiceAuthError> {
+    prepare_request_for_transport(instance, expected_deployment, ChannelTransport::Mtls)
+        .map(|(request, key, _)| (request, key))
+}
+
+fn prepare_request_for_transport(
+    instance: ServiceInstanceRegistration,
+    expected_deployment: Option<RouteIdentity>,
+    transport: ChannelTransport,
+) -> Result<
+    (
+        ChannelBootstrapRequest,
+        KeyPair,
+        Option<plaintext::PlaintextKey>,
+    ),
+    ServiceAuthError,
+> {
     let key =
         KeyPair::generate_for(&PKCS_ED25519).map_err(|_| ServiceAuthError::InvalidCredential)?;
     let mut params = CertificateParams::default();
     params.distinguished_name = DistinguishedName::new();
+    let plaintext = if transport == ChannelTransport::IntranetPlaintext {
+        let key = plaintext::PlaintextKey::generate()?;
+        params.subject_alt_names.push(key.csr_name()?);
+        Some(key)
+    } else {
+        None
+    };
     let csr_pem = params
         .serialize_request(&key)
         .and_then(|csr| csr.pem())
@@ -154,10 +199,24 @@ fn prepare_request(
     request
         .validate()
         .map_err(|_| ServiceAuthError::InvalidNodeConfig)?;
-    Ok((request, key))
+    Ok((request, key, plaintext))
 }
 
 impl ServiceConnection {
+    #[cfg(test)]
+    pub(crate) async fn bootstrap_test_channel(
+        &self,
+        instance: ServiceInstanceRegistration,
+        expected_deployment: Option<RouteIdentity>,
+    ) -> Result<ServiceChannelIdentity, ServiceAuthError> {
+        let transport = match std::env::var("LINGSHU_CHANNEL_TEST_TRANSPORT").as_deref() {
+            Ok("intranet_plaintext") => ChannelTransport::IntranetPlaintext,
+            Ok("mtls") | Err(_) => ChannelTransport::Mtls,
+            _ => return Err(ServiceAuthError::InvalidNodeConfig),
+        };
+        self.bootstrap_channel_with_transport(instance, expected_deployment, transport)
+            .await
+    }
     /// Prepare a short-lived TLS identity from a platform with prototype channel
     /// bootstrap explicitly enabled. This does not create or activate a Session.
     /// Keep the returned base generation on subsequent registration/renewal;
@@ -167,8 +226,24 @@ impl ServiceConnection {
         instance: ServiceInstanceRegistration,
         expected_deployment: Option<RouteIdentity>,
     ) -> Result<ServiceChannelIdentity, ServiceAuthError> {
+        self.bootstrap_channel_with_transport(instance, expected_deployment, ChannelTransport::Mtls)
+            .await
+    }
+
+    /// Explicit unencrypted TCP requires the `service-plaintext` feature and a
+    /// matching Host. HTTPS authentication and signed business envelopes remain.
+    pub async fn bootstrap_channel_with_transport(
+        &self,
+        instance: ServiceInstanceRegistration,
+        expected_deployment: Option<RouteIdentity>,
+        transport: ChannelTransport,
+    ) -> Result<ServiceChannelIdentity, ServiceAuthError> {
         self.ensure_open()?;
-        let (mut request, key) = prepare_request(instance, expected_deployment)?;
+        let (mut request, key, plaintext) = tokio::task::spawn_blocking(move || {
+            prepare_request_for_transport(instance, expected_deployment, transport)
+        })
+        .await
+        .map_err(|_| ServiceAuthError::InvalidCredential)??;
         let mut registration = self.registration().await;
         request.instance = registration.bind(request.instance)?;
         let started = Instant::now();
@@ -177,7 +252,8 @@ impl ServiceConnection {
             .json(&request);
         let response = self.root_response_json(builder).await?;
         self.ensure_open()?;
-        let credential = PreparedIdentity::accept(response, &request, self.application_id(), key)?;
+        let credential = PreparedIdentity::accept(response, &request, self.application_id(), key)?
+            .bind_transport(transport, plaintext)?;
         let authorization_deadline = authorization_deadline(&credential.response, started)?;
         registration.accept(Some(&credential.response.instance))?;
         Ok(ServiceChannelIdentity {
@@ -208,8 +284,14 @@ impl ServiceChannelSessions {
             .registration()
             .await
             .request(&initial.instance.instance_id);
-        let (request, key) = prepare_request(instance, Some(initial.deployment.clone()))
-            .map_err(|_| ChannelSessionError::InvalidConfig)?;
+        let transport = initial.endpoints[0].transport();
+        let deployment = Some(initial.deployment.clone());
+        let (request, key, plaintext) = tokio::task::spawn_blocking(move || {
+            prepare_request_for_transport(instance, deployment, transport)
+        })
+        .await
+        .map_err(|_| ChannelSessionError::InvalidConfig)?
+        .map_err(|_| ChannelSessionError::InvalidConfig)?;
         let started = Instant::now();
         let old_deadline = self.authorization_deadline();
         let envelope = self
@@ -234,6 +316,7 @@ impl ServiceChannelSessions {
             self.identity.connection.application_id(),
             key,
         )
+        .and_then(|identity| identity.bind_transport(transport, plaintext))
         .map_err(|_| ChannelSessionError::InvalidResponse)?;
         if Instant::now() >= deadline || self.closed.borrow().is_some() {
             return Err(ChannelSessionError::AuthorityExpired);
@@ -275,7 +358,7 @@ mod tests {
     use super::*;
     use kish_lingshu_foundation_contract::{
         service_transport::{
-            bootstrap::{ChannelCertificate, TlsEndpoint},
+            bootstrap::{ChannelCertificate, ChannelEndpoint},
             PlatformControlRoute,
         },
         ServiceInstanceIdentity,
@@ -348,7 +431,7 @@ mod tests {
                 instance_id: "sdk".into(),
                 generation: "base".into(),
             },
-            endpoints: vec![TlsEndpoint::new("tls/router.example:7447".into()).unwrap()],
+            endpoints: vec![ChannelEndpoint::new("tls/router.example:7447".into()).unwrap()],
             control_route: PlatformControlRoute {
                 deployment: RouteIdentity::new("dev").unwrap(),
                 platform_node: RouteIdentity::new("node").unwrap(),
@@ -370,9 +453,16 @@ mod tests {
             authorization_expires_unix_ms: now + 30_000,
             authorization_issued_unix_ms: now,
         };
-        let identity = PreparedIdentity::accept(response.clone(), &request, "app", key).unwrap();
+        let mut identity =
+            PreparedIdentity::accept(response.clone(), &request, "app", key).unwrap();
         assert!(!format!("{identity:?}").contains(&private));
         assert!(identity.signer.public_key().len() == 32);
+        identity.response.endpoints =
+            vec![ChannelEndpoint::new("tcp/router.example:7447".into()).unwrap()];
+        assert!(matches!(
+            identity.bind_transport(ChannelTransport::Mtls, None),
+            Err(ServiceAuthError::InvalidResponse)
+        ));
         let started = Instant::now();
         let mut ahead = response.clone();
         ahead.authorization_issued_unix_ms = now + 5_000;
@@ -403,7 +493,7 @@ mod tests {
         .await
         .unwrap();
         let identity = connection
-            .bootstrap_channel(
+            .bootstrap_test_channel(
                 ServiceInstanceRegistration {
                     instance_id: "native-finalization".into(),
                     incarnation_id: "finalization-boot".into(),
@@ -539,7 +629,7 @@ mod tests {
             generation: None,
         };
         let identity = connection
-            .bootstrap_channel(registration(), Some(RouteIdentity::new("dev").unwrap()))
+            .bootstrap_test_channel(registration(), Some(RouteIdentity::new("dev").unwrap()))
             .await
             .unwrap();
         let original = identity.bootstrap_response().clone();
@@ -610,7 +700,7 @@ mod tests {
         };
         // Another valid certificate on the same root/base has no issuance lineage.
         let identity = connection
-            .bootstrap_channel(registration(), Some(RouteIdentity::new("dev").unwrap()))
+            .bootstrap_test_channel(registration(), Some(RouteIdentity::new("dev").unwrap()))
             .await
             .unwrap();
         let mut foreign = identity
@@ -770,7 +860,7 @@ mod tests {
         .await
         .unwrap();
         let identity = connection
-            .bootstrap_channel(
+            .bootstrap_test_channel(
                 ServiceInstanceRegistration {
                     instance_id: "native-rotation".into(),
                     incarnation_id: "rotation-boot".into(),

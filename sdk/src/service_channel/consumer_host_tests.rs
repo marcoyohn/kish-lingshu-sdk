@@ -187,7 +187,7 @@ async fn pool(
     instance: &str,
 ) -> super::super::ServiceChannelSessions {
     connection
-        .bootstrap_channel(
+        .bootstrap_test_channel(
             ServiceInstanceRegistration {
                 instance_id: instance.into(),
                 incarnation_id: format!("{instance}-boot"),

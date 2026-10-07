@@ -102,7 +102,7 @@ async fn main() -> ExampleResult<()> {
         .map(kish_lingshu_foundation_contract::service_transport::RouteIdentity::new)
         .transpose()?;
     let identity = connection
-        .bootstrap_channel(
+        .bootstrap_channel_with_transport(
             ServiceInstanceRegistration {
                 // A stable replica slot, not a PID. A new explicit process start has a new incarnation.
                 instance_id: env("LINGSHU_INSTANCE_ID")?,
@@ -110,6 +110,19 @@ async fn main() -> ExampleResult<()> {
                 generation: None,
             },
             deployment,
+            match std::env::var("LINGSHU_CHANNEL_TRANSPORT").as_deref() {
+                Ok("intranet_plaintext") => {
+                    kish_lingshu_sdk::service_channel::ChannelTransport::IntranetPlaintext
+                }
+                Ok("mtls") | Err(std::env::VarError::NotPresent) => {
+                    kish_lingshu_sdk::service_channel::ChannelTransport::Mtls
+                }
+                _ => {
+                    return Err(
+                        "LINGSHU_CHANNEL_TRANSPORT must be mtls or intranet_plaintext".into(),
+                    )
+                }
+            },
         )
         .await?;
     let mut sessions = identity

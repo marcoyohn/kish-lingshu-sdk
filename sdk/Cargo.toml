@@ -1,6 +1,6 @@
 [package]
 name = "kish-lingshu-sdk"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Rust SDK for Kish Lingshu application integrations"
@@ -52,6 +52,8 @@ service-auth-core = [
 service-channel = ["service-auth-core", "kish-lingshu-runtime-contract/service-transport", "dep:rcgen"]
 # Finite outbound TLS sessions only; route/role activation remains separate.
 service-zenoh = ["service-channel", "dep:base64", "dep:metrics", "dep:zenoh", "dep:tracing", "dep:tracing-subscriber"]
+# Explicit authenticated, unencrypted private-network profile; never a fallback.
+service-plaintext = ["service-zenoh", "zenoh/auth_pubkey", "dep:rsa", "dep:rand"]
 # Explicit finite Call bindings; Async additionally requires enable_async_calls.
 service-call-zenoh = ["service-zenoh", "service-execution"]
 user-task-completion = [
@@ -84,10 +86,11 @@ jsonschema = { workspace = true, optional = true }
 kish-lingshu-event-dispatch-contract = { workspace = true }
 kish-lingshu-foundation-contract = { workspace = true }
 kish-lingshu-runtime-contract = { workspace = true }
-kish-lingshu-sdk-macros = { path = "macros", version = "=0.2.0", optional = true }
+kish-lingshu-sdk-macros = { path = "macros", version = "=0.3.0", optional = true }
 metrics = { workspace = true, optional = true }
 percent-encoding = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
+rsa = { version = "0.9", optional = true }
 rcgen = { version = "=0.14.7", default-features = false, features = ["crypto", "ring", "pem"], optional = true }
 reqwest = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }

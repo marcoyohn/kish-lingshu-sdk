@@ -368,7 +368,10 @@ impl ServiceConnection {
         &self,
         trust: &ServiceTrust,
         envelope: &kish_lingshu_foundation_contract::service_transport::TransportEnvelope,
-    ) -> Result<(), ServiceAuthError> {
+    ) -> Result<
+        kish_lingshu_foundation_contract::service_auth::TransportMessageClaims,
+        ServiceAuthError,
+    > {
         self.ensure_open()?;
         let now = chrono::Utc::now().timestamp_millis();
         let claims = kish_lingshu_foundation_contract::service_auth::verify_transport_message(
@@ -401,7 +404,7 @@ impl ServiceConnection {
             return Err(ServiceAuthError::InvalidResponse);
         }
         nonces.insert(key, claims.expires_at);
-        Ok(())
+        Ok(claims)
     }
 
     pub(crate) fn root_request(

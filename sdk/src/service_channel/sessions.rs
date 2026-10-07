@@ -3,7 +3,7 @@
 use super::ServiceChannelIdentity;
 use base64::{engine::general_purpose::STANDARD, Engine};
 use kish_lingshu_foundation_contract::service_transport::{
-    bootstrap::TlsEndpoint,
+    bootstrap::ChannelEndpoint,
     channel::{ChannelAuthorization, ChannelRotationFinalization, MAX_CHANNEL_CONTROL_BYTES},
     MessageKind, ProtocolVersion, RouteIdentity, TransportEnvelope, MAX_CONTROL_PAYLOAD_BYTES,
     MAX_DATA_LANES, MAX_ENVELOPE_OVERHEAD_BYTES,
@@ -520,7 +520,8 @@ pub(super) fn client_config(
     let certificate = &identity.credential.response.certificate;
     // Official in-memory secret fields: no key file or caller-provided locator
     // suffix can weaken verification. Never serialize this object for logging.
-    let value = serde_json::json!({
+    #[allow(unused_mut)]
+    let mut value = serde_json::json!({
         "mode": "client",
         "listen": {"endpoints": []},
         "connect": {"endpoints": ordered_endpoints(&identity.credential.response.endpoints, lane), "timeout_ms": 0,
@@ -558,10 +559,29 @@ pub(super) fn client_config(
                 "enable_mtls": true, "verify_name_on_connect": true, "close_link_on_expiration": true
             }}}
     });
+    if let Some(key) = &identity.credential.plaintext {
+        #[cfg(feature = "service-plaintext")]
+        {
+            value["transport"]["link"]["protocols"] = serde_json::json!(["tcp"]);
+            value["transport"]["link"]
+                .as_object_mut()
+                .unwrap()
+                .remove("tls");
+            value["transport"]["link"]["tcp"] = serde_json::json!({"so_rcvbuf": 1024 * 1024});
+            value["transport"]["auth"] = key
+                .native_config()
+                .map_err(|_| ChannelSessionError::InvalidConfig)?;
+        }
+        #[cfg(not(feature = "service-plaintext"))]
+        {
+            let _ = key;
+            return Err(ChannelSessionError::InvalidConfig);
+        }
+    }
     zenoh::Config::from_json5(&value.to_string()).map_err(|_| ChannelSessionError::InvalidConfig)
 }
 
-fn ordered_endpoints(endpoints: &[TlsEndpoint], lane: usize) -> Vec<&str> {
+fn ordered_endpoints(endpoints: &[ChannelEndpoint], lane: usize) -> Vec<&str> {
     (0..endpoints.len())
         .map(|offset| endpoints[(lane + offset) % endpoints.len()].as_str())
         .collect()
@@ -1268,6 +1288,7 @@ pub(crate) fn test_sync_pool_lanes(
             response,
             signer,
             key,
+            plaintext: None,
         },
         predecessor: None,
         connection: connection.clone(),

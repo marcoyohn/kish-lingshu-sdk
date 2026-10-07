@@ -194,9 +194,9 @@ async fn pressure(count: usize) {
     let router = zenoh::open(router_config).await.unwrap();
     let mut initial = call::tests::authority(&platform, &signer);
     initial.endpoints = vec![
-        kish_lingshu_foundation_contract::service_transport::bootstrap::TlsEndpoint::new(format!(
-            "tls/127.0.0.1:{port}"
-        ))
+        kish_lingshu_foundation_contract::service_transport::bootstrap::ChannelEndpoint::new(
+            format!("tls/127.0.0.1:{port}"),
+        )
         .unwrap(),
     ];
     initial.certificate.certificate_pem = certificate;
@@ -206,6 +206,7 @@ async fn pressure(count: usize) {
             response: initial.clone(),
             signer,
             key,
+            plaintext: None,
         },
         predecessor: None,
         connection: f.core.connection.clone(),

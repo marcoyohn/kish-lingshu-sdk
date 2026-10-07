@@ -107,6 +107,69 @@ impl From<TlsEndpoint> for String {
     }
 }
 
+/// Explicit channel security profile. No connection failure changes this choice.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelTransport {
+    #[default]
+    Mtls,
+    IntranetPlaintext,
+}
+
+/// Validated bootstrap locator; every endpoint in a response uses one profile.
+#[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ChannelEndpoint(String);
+impl ChannelEndpoint {
+    pub fn new(value: String) -> Result<Self, TransportContractError> {
+        if value.starts_with("tls/") {
+            TlsEndpoint::new(value).map(Into::into)
+        } else if let Some(address) = value.strip_prefix("tcp/") {
+            // Share the strict locator grammar, including IPv6 and nonzero ports.
+            TlsEndpoint::new(format!("tls/{address}"))?;
+            Ok(Self(value))
+        } else {
+            Err(TransportContractError::InvalidIdentity)
+        }
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    pub fn transport(&self) -> ChannelTransport {
+        if self.0.starts_with("tls/") {
+            ChannelTransport::Mtls
+        } else {
+            ChannelTransport::IntranetPlaintext
+        }
+    }
+}
+impl fmt::Debug for ChannelEndpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ChannelEndpoint")
+            .field(&self.transport())
+            .finish()
+    }
+}
+impl TryFrom<String> for ChannelEndpoint {
+    type Error = TransportContractError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+impl From<ChannelEndpoint> for String {
+    fn from(value: ChannelEndpoint) -> Self {
+        value.0
+    }
+}
+impl From<TlsEndpoint> for ChannelEndpoint {
+    fn from(value: TlsEndpoint) -> Self {
+        Self(value.0)
+    }
+}
+
+/// Verified CSR URI SAN binds the transport's proven RSA key to a signing identity.
+pub const TCP_PUBLIC_KEY_SAN_PREFIX: &str = "urn:zenss:tcp-pubkey-sha256:";
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelBootstrapRequest {
@@ -162,7 +225,7 @@ pub struct ChannelBootstrapResponse {
     /// One-way identity of the authoritative parent key, never the API Key.
     pub parent_credential_fingerprint: String,
     pub instance: ServiceInstanceIdentity,
-    pub endpoints: Vec<TlsEndpoint>,
+    pub endpoints: Vec<ChannelEndpoint>,
     pub control_route: PlatformControlRoute,
     pub certificate: ChannelCertificate,
     /// HTTPS-authenticated keys for the distinct zenoh-message signing domain.
@@ -213,6 +276,10 @@ impl ChannelBootstrapResponse {
         RouteIdentity::new(self.instance.generation.clone())?;
         if self.endpoints.is_empty()
             || self.endpoints.len() > MAX_CHANNEL_ENDPOINTS
+            || self
+                .endpoints
+                .iter()
+                .any(|e| e.transport() != self.endpoints[0].transport())
             || self.endpoints.iter().collect::<HashSet<_>>().len() != self.endpoints.len()
             || self.certificate.certificate_pem.is_empty()
             || self.certificate.certificate_pem.len() > 16 * 1024
@@ -275,6 +342,26 @@ impl ChannelBootstrapResponse {
 mod tests {
     use super::*;
     #[test]
+    fn channel_endpoints_keep_tls_strict_and_reject_mixed_profiles() {
+        assert!(TlsEndpoint::new("tcp/router:7447".into()).is_err());
+        for invalid in [
+            "tcp/router",
+            "tcp/router:0",
+            "tcp/user@router:7447",
+            "tcp/router:7447?x=y",
+            "udp/router:7447",
+        ] {
+            assert!(ChannelEndpoint::new(invalid.into()).is_err());
+        }
+        let tcp = ChannelEndpoint::new("tcp/[::1]:7447".into()).unwrap();
+        assert_eq!(tcp.transport(), ChannelTransport::IntranetPlaintext);
+        let mut reply = response();
+        reply.endpoints.push(tcp.clone());
+        assert!(reply.validate("app", &request(), 1).is_err());
+        reply.endpoints = vec![tcp];
+        assert!(reply.validate("app", &request(), 1).is_ok());
+    }
+    #[test]
     fn tls_endpoints_reject_discovery_credentials_and_transport_options() {
         for invalid in [
             "tcp/a:7447",
@@ -320,7 +407,7 @@ mod tests {
                 instance_id: "sdk".into(),
                 generation: "base".into(),
             },
-            endpoints: vec![TlsEndpoint::new("tls/router.example:7447".into()).unwrap()],
+            endpoints: vec![ChannelEndpoint::new("tls/router.example:7447".into()).unwrap()],
             control_route: PlatformControlRoute {
                 deployment: RouteIdentity::new("dev").unwrap(),
                 platform_node: RouteIdentity::new("node").unwrap(),
@@ -374,7 +461,7 @@ mod tests {
                 }
                 6 => {
                     bad.candidate.endpoints =
-                        vec![TlsEndpoint::new("tls/foreign:7447".into()).unwrap()]
+                        vec![ChannelEndpoint::new("tls/foreign:7447".into()).unwrap()]
                 }
                 _ => bad.candidate.certificate.root_ca_pem = "foreign".into(),
             }

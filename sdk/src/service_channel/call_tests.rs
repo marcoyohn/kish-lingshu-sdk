@@ -3,7 +3,7 @@ use crate::services::execution::tests::{fixture, invocation, wait_until};
 use kish_lingshu_foundation_contract::{
     service_auth::{verify_client_transport_message, ServiceSigner},
     service_transport::{
-        bootstrap::{ChannelCertificate, TlsEndpoint},
+        bootstrap::{ChannelCertificate, ChannelEndpoint},
         DataLaneId, InstanceRoute, LaneIdentity, PlatformControlRoute, RouteIdentity,
     },
     ServiceInstanceIdentity,
@@ -28,7 +28,7 @@ pub(crate) fn authority(
             instance_id: "sdk".into(),
             generation: "base".into(),
         },
-        endpoints: vec![TlsEndpoint::new("tls/localhost:7447".into()).unwrap()],
+        endpoints: vec![ChannelEndpoint::new("tls/localhost:7447".into()).unwrap()],
         control_route: PlatformControlRoute {
             deployment: id("dev"),
             platform_node: id("platform"),

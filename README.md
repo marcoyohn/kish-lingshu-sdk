@@ -47,10 +47,9 @@ access to the private Lingshu server repository or private Git dependencies.
 
 ## Releases
 
-The source repository publishes snapshots through a manual workflow and releases
-through `sdk-v<version>` tags. Release tags appear here as `v<version>` and are
-immutable. `main` contains the latest published SDK snapshot. Only maintainers
-and the publishing automation can write to this repository.
+Maintainers publish snapshots with explicit local Make commands from committed
+source. Source `sdk-v<version>` tags select releases; pushes and tags do not publish automatically. Release tags appear here as `v<version>` and are
+immutable. `main` contains the latest published SDK snapshot. Only maintainers and the explicit local publishing tool write to this repository.
 
 Local Workspace/Sandbox execution, permission journals and CLI presentation belong
 to the source product and are not part of the public SDK export.
@@ -67,7 +66,8 @@ execution readiness; each invocation still checks current permission and capacit
 | Feature | Purpose |
 | --- | --- |
 | `service-channel` | HTTPS bootstrap and local CSR key ownership |
-| `service-zenoh` | Outbound TLS Sessions, Provider catalog, exact role proof/renewal/rotation |
+| `service-zenoh` | Outbound mTLS Sessions by default, Provider catalog, exact role proof/renewal/rotation |
+| `service-plaintext` | Explicit authenticated intranet TCP, official Zenoh RSA possession handshake |
 | `service-call-zenoh` | Typed Service Sync/Async bindings, original completion authority |
 | `event-consumer-zenoh` | Directed Consumer execution chosen by Lingshu Dispatch |
 | `event-publication-zenoh` | PublishEvent on the managed native control channel |
@@ -185,3 +185,20 @@ Official configuration and the fixed resource/performance gates must be verified
 with the actual deployment cap; diagnostic socket injection is not acceptance.
 The accepted Linux fixture uses glibc arena2 and records its node cap separately.
 macOS kernel-window behavior has not been accepted by the Linux measurements.
+
+## Explicit intranet plaintext (0.3.0)
+
+A matching ZenSS 0.4.0 Host/Build Kit and enabled product profile are required.
+Add `service-plaintext` to the application's native features and call
+`bootstrap_channel_with_transport(instance, expected_deployment,
+ChannelTransport::IntranetPlaintext)`. The enum is exported from
+`kish_lingshu_sdk::service_channel`. `bootstrap_channel` remains mTLS.
+For `native-application`, set `LINGSHU_CHANNEL_TRANSPORT=intranet_plaintext`.
+
+Endpoints use `tcp/hostname:7447`; the authenticated HTTPS bootstrap binds a
+fresh local RSA transport key to the signing identity. Neither private key is
+uploaded. Grants, route readiness and managed rotation stay unchanged. Data and
+TCP framing are unencrypted; use only trusted intranet/VPN access. No automatic
+fallback, mixed TLS/TCP endpoint pool or inbound application listener is added.
+Existing Service/Event annotations stay unchanged. Dispatch still chooses event
+consumer groups and owns retry and acknowledgement.

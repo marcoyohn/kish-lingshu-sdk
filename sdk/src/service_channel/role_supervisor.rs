@@ -875,7 +875,7 @@ mod tests {
         .await
         .unwrap();
         let identity = connection
-            .bootstrap_channel(
+            .bootstrap_test_channel(
                 ServiceInstanceRegistration {
                     instance_id: "native-auto-rotation".into(),
                     incarnation_id: "auto-rotation-boot".into(),
@@ -1108,7 +1108,7 @@ mod tests {
         .await
         .unwrap();
         let identity = connection
-            .bootstrap_channel(
+            .bootstrap_test_channel(
                 ServiceInstanceRegistration {
                     instance_id: "native-auto-rotation-fail".into(),
                     incarnation_id: "auto-rotation-fail-boot".into(),
@@ -1251,7 +1251,7 @@ mod tests {
         .await
         .unwrap();
         let identity = connection
-            .bootstrap_channel(
+            .bootstrap_test_channel(
                 ServiceInstanceRegistration {
                     instance_id: "native-managed".into(),
                     incarnation_id: "managed-boot".into(),

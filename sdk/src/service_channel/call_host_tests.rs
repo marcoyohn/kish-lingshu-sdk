@@ -343,7 +343,7 @@ async fn native_workflow_with_parallel(
         .await
         .unwrap();
     let identity = connection
-        .bootstrap_channel(
+        .bootstrap_test_channel(
             ServiceInstanceRegistration {
                 instance_id: instance,
                 incarnation_id: "workflow-boot".into(),

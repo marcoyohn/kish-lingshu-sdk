@@ -966,7 +966,7 @@ mod tests {
             generation: None,
         };
         let identity = connection
-            .bootstrap_channel(registration.clone(), None)
+            .bootstrap_test_channel(registration.clone(), None)
             .await
             .unwrap();
         let common_lease_expired = Instant::now() + Duration::from_millis(30_250);
@@ -1007,7 +1007,7 @@ mod tests {
         tokio::time::sleep_until(common_lease_expired).await;
         assert!(matches!(
             connection
-                .bootstrap_channel(
+                .bootstrap_test_channel(
                     ServiceInstanceRegistration {
                         generation: Some(base),
                         ..registration

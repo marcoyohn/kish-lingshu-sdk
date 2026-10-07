@@ -2,8 +2,9 @@
 //! readiness, role renewal or business execution is performed by this module.
 use super::{ChannelSessionError, ServiceChannelSessions};
 use kish_lingshu_foundation_contract::{
-    service_auth::{ChannelMessageSigner, ClientChannelIdentity},
+    service_auth::{ChannelMessageSigner, ClientChannelIdentity, TransportMessageClaims},
     service_transport::{
+        bootstrap::MAX_BOOTSTRAP_CLOCK_SKEW_MS,
         enrollment::validate_route_binding,
         probe::{RouteProbeChallenge, MAX_ROUTE_PROBE_BYTES, ROUTE_PROBE_TIMEOUT_MS},
         ExactRouteKey, MessageKind, ProtocolVersion, ServiceEndpoint, TransportEnvelope,
@@ -35,7 +36,8 @@ pub(super) fn validate_challenge(
     let request = TransportEnvelope::decode(bytes, target, &route.application_id, now)
         .map_err(|_| ChannelSessionError::InvalidResponse)?;
     if request.kind != MessageKind::BindLane
-        || request.deadline_unix_ms > now.saturating_add(ROUTE_PROBE_TIMEOUT_MS)
+        || request.deadline_unix_ms
+            > now.saturating_add(ROUTE_PROBE_TIMEOUT_MS + MAX_BOOTSTRAP_CLOCK_SKEW_MS)
     {
         return Err(ChannelSessionError::InvalidResponse);
     }
@@ -51,6 +53,25 @@ pub(super) fn validate_challenge(
         return Err(ChannelSessionError::InvalidResponse);
     }
     Ok(request)
+}
+
+/// Check verified sender time, rather than interpreting clock skew as a longer
+/// probe. Signature, exact envelope binding and nonce checks precede this call.
+pub(super) fn validate_challenge_time(
+    claims: &TransportMessageClaims,
+    now: i64,
+) -> Result<(), ChannelSessionError> {
+    if claims.issued_at_unix_ms > now.saturating_add(MAX_BOOTSTRAP_CLOCK_SKEW_MS)
+        || claims.deadline_unix_ms <= now
+        || claims.deadline_unix_ms <= claims.issued_at_unix_ms
+        || claims
+            .deadline_unix_ms
+            .saturating_sub(claims.issued_at_unix_ms)
+            > ROUTE_PROBE_TIMEOUT_MS
+    {
+        return Err(ChannelSessionError::InvalidResponse);
+    }
+    Ok(())
 }
 
 pub(super) fn sign_reply(
@@ -141,10 +162,12 @@ impl ServiceChannelSessions {
         if request.deadline_unix_ms > role_expires_at_ms {
             return Err(ChannelSessionError::InvalidResponse);
         }
-        self.identity
+        let claims = self
+            .identity
             .connection
             .verify_channel_message(&initial.transport_trust, &request)
             .map_err(|_| ChannelSessionError::InvalidResponse)?;
+        validate_challenge_time(&claims, now)?;
         let subject = ClientChannelIdentity {
             application_id: initial.application_id.clone(),
             instance_id: route.instance_id.clone(),
@@ -235,6 +258,87 @@ mod tests {
     }
 
     #[test]
+    fn signed_probe_accepts_bounded_clock_skew_without_extending_sender_lifetime() {
+        let issued = chrono::Utc::now().timestamp_millis();
+        let platform = ServiceSigner::new(&[42; 32]).unwrap();
+        let endpoint = endpoint();
+        let req = request(&platform, &endpoint, issued);
+        let trust = platform.transport_trust("app", issued / 1000).unwrap();
+        for offset in [-5_000, -205, 0, 205, 4_999] {
+            let local_now = issued + offset;
+            let decoded = validate_challenge(
+                &endpoint,
+                &req.target,
+                &req.encode(issued).unwrap(),
+                local_now,
+            )
+            .unwrap();
+            let claims = verify_transport_message(
+                &trust,
+                &decoded.proof,
+                "app",
+                decoded.kind,
+                &decoded.target,
+                &decoded.request_id,
+                decoded.payload.get().as_bytes(),
+                local_now,
+            )
+            .unwrap();
+            validate_challenge_time(&claims, local_now).unwrap();
+        }
+        assert!(validate_challenge(
+            &endpoint,
+            &req.target,
+            &req.encode(issued).unwrap(),
+            issued - 5_001,
+        )
+        .is_err());
+        assert!(validate_challenge(
+            &endpoint,
+            &req.target,
+            &req.encode(issued).unwrap(),
+            issued + 5_000,
+        )
+        .is_err());
+
+        // A correctly signed overlong probe is refused even when its absolute
+        // deadline fits the reception-side clock-skew bound.
+        let mut overlong = req;
+        overlong.deadline_unix_ms = issued + ROUTE_PROBE_TIMEOUT_MS + 1;
+        overlong.proof = platform
+            .sign_transport_message(
+                "app",
+                overlong.kind,
+                &overlong.target,
+                &overlong.request_id,
+                overlong.payload.get().as_bytes(),
+                issued,
+                overlong.deadline_unix_ms,
+            )
+            .unwrap();
+        let decoded = validate_challenge(
+            &endpoint,
+            &overlong.target,
+            &overlong.encode(issued).unwrap(),
+            issued,
+        )
+        .unwrap();
+        let claims = verify_transport_message(
+            &trust,
+            &decoded.proof,
+            "app",
+            decoded.kind,
+            &decoded.target,
+            &decoded.request_id,
+            decoded.payload.get().as_bytes(),
+            issued,
+        )
+        .unwrap();
+        assert!(validate_challenge_time(&claims, issued).is_err());
+        assert!(validate_challenge_time(&claims, issued - 5_001).is_err());
+    }
+
+    #[test]
     fn reply_binds_both_signing_directions_and_never_executes() {
         let now = chrono::Utc::now().timestamp_millis();
         let platform = ServiceSigner::new(&[42; 32]).unwrap();
@@ -309,7 +413,7 @@ mod tests {
             let mut changed = req.clone();
             match index {
                 0 => changed.kind = MessageKind::InvokeCall,
-                1 => changed.deadline_unix_ms = now + 5_001,
+                1 => changed.deadline_unix_ms = now + 10_001,
                 2 => {
                     changed.payload = serde_json::value::to_raw_value(&RouteProbeChallenge {
                         challenge: id("c"),
