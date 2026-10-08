@@ -396,6 +396,36 @@ impl ServiceSigner {
         Ok((envelope.app_id, envelope.claims))
     }
 
+    /// Platform-only, nonce-bound discovery metadata; never a Consumer credential.
+    pub fn sign_consumer_presence<T: Serialize>(
+        &self,
+        app: &str,
+        claims: &T,
+        now: i64,
+    ) -> Result<String, ServiceAuthError> {
+        self.sign(app, "consumer-presence", claims, now, now + 3)
+    }
+    pub fn verify_consumer_presence<T: DeserializeOwned>(
+        &self,
+        proof: &str,
+        now: i64,
+    ) -> Result<(String, T), ServiceAuthError> {
+        let (encoded, signature, envelope): (_, _, Envelope<T>) = decode(proof)?;
+        validate_envelope(&envelope, "consumer-presence", now, 3)?;
+        let epoch = envelope
+            .key_id
+            .parse::<i64>()
+            .map_err(|_| ServiceAuthError)?;
+        if epoch != envelope.issued_at / EPOCH_SECONDS {
+            return Err(ServiceAuthError);
+        }
+        let key = self.key(&envelope.app_id, epoch, "consumer-presence")?;
+        signature::UnparsedPublicKey::new(&signature::ED25519, key.public_key().as_ref())
+            .verify(encoded.as_bytes(), &signature)
+            .map_err(|_| ServiceAuthError)?;
+        Ok((envelope.app_id, envelope.claims))
+    }
+
     pub fn sign_session<T: Serialize>(
         &self,
         app: &str,
@@ -1107,6 +1137,25 @@ mod tests {
     use super::*;
     const NOW: i64 = 1_800_000_001;
 
+    #[test]
+    fn consumer_presence_proofs_are_short_lived_and_not_session_credentials() {
+        let signer = ServiceSigner::new(&[7; 32]).unwrap();
+        let proof = signer.sign_consumer_presence("app", &42u64, 1000).unwrap();
+        assert_eq!(
+            signer
+                .verify_consumer_presence::<u64>(&proof, 1001)
+                .unwrap(),
+            ("app".into(), 42)
+        );
+        assert!(signer
+            .verify_consumer_presence::<u64>(&proof, 1003)
+            .is_err());
+        assert!(signer.verify_session::<u64>(&proof, 1001).is_err());
+        let session = signer.sign_session("app", &42u64, 1000, 1100).unwrap();
+        assert!(signer
+            .verify_consumer_presence::<u64>(&session, 1001)
+            .is_err());
+    }
     #[test]
     fn callback_binds_application_method_target_body_and_time() {
         let signer = ServiceSigner::new(&[7; 32]).unwrap();

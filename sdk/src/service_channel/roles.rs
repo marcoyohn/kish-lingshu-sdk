@@ -351,6 +351,7 @@ impl ServiceChannelSessions {
                 response.authorization_expires_at_ms,
                 deadline,
                 role.catalog.clone(),
+                matches!(&role.response, ChannelRoleEnrollmentResponse::Consumer(_)),
             )
             .await?;
         role.stop = listener.stop;
@@ -823,7 +824,14 @@ impl ServiceChannelSessions {
         let deadline = (started + Duration::from_millis((expires - now).min(30_000) as u64))
             .min(self.authorization_deadline());
         let listener = self
-            .install_role_declarations(&endpoint, &generation, expires, deadline, catalog.clone())
+            .install_role_declarations(
+                &endpoint,
+                &generation,
+                expires,
+                deadline,
+                catalog.clone(),
+                matches!(&request, ChannelRoleEnrollment::Consumer(_)),
+            )
             .await?;
         let logical_key = match &request {
             ChannelRoleEnrollment::Provider(r) => format!("provider:{}", r.provider_key),
@@ -888,6 +896,7 @@ impl ServiceChannelSessions {
         expires: i64,
         deadline: Instant,
         catalog: Option<Arc<super::catalog::CatalogSnapshot>>,
+        consumer_presence: bool,
     ) -> Result<RoleDeclarations, ChannelSessionError> {
         validate_role_session_lanes(endpoint, self.lane_count())?;
         let ServiceEndpoint::Zenoh { route, lanes, .. } = endpoint else {
@@ -1011,6 +1020,26 @@ impl ServiceChannelSessions {
                 }
             }
         }
+        let presence = if consumer_presence {
+            Some(
+                self.sessions[0]
+                    .liveliness()
+                    .declare_token(
+                        route
+                            .consumer_presence_key(
+                                &lanes[0],
+                                &self.identity.bootstrap_response().control_route,
+                            )
+                            .map_err(|_| ChannelSessionError::InvalidConfig)?
+                            .as_str()
+                            .to_owned(),
+                    )
+                    .await
+                    .map_err(|_| ChannelSessionError::Transport)?,
+            )
+        } else {
+            None
+        };
         drop(sender);
         drop(control_sender);
         let endpoint = endpoint.clone();
@@ -1334,6 +1363,12 @@ impl ServiceChannelSessions {
                 }
             }
             let mut cleaned = true;
+            if let Some(presence) = presence {
+                cleaned &= matches!(
+                    tokio::time::timeout(Duration::from_secs(5), presence.undeclare()).await,
+                    Ok(Ok(()))
+                );
+            }
             // Withdraw discovery before draining. Role expiry alone must not
             // cancel an accepted renewable attempt's independent report scope.
             #[cfg(feature = "service-call-zenoh")]
@@ -2579,7 +2614,8 @@ mod tests {
                     &generation,
                     expires,
                     role.role_deadline,
-                    None
+                    None,
+                    false
                 )
                 .await,
                 Err(ChannelSessionError::InvalidResponse)
@@ -2593,7 +2629,8 @@ mod tests {
                 &generation,
                 expires,
                 role.role_deadline,
-                None
+                None,
+                false
             )
             .await,
             Err(ChannelSessionError::InvalidConfig)

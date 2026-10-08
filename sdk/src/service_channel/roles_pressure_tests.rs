@@ -127,6 +127,7 @@ async fn install(
     pool: &ServiceChannelSessions,
     endpoint: &ServiceEndpoint,
     catalog: Option<Arc<super::super::catalog::CatalogSnapshot>>,
+    consumer_presence: bool,
 ) -> RoleDeclarations {
     let ServiceEndpoint::Zenoh { route, .. } = endpoint else {
         unreachable!()
@@ -138,6 +139,7 @@ async fn install(
             chrono::Utc::now().timestamp_millis() + 30_000,
             Instant::now() + Duration::from_secs(30),
             catalog,
+            consumer_presence,
         )
         .await
         .unwrap();
@@ -242,7 +244,7 @@ async fn pressure(count: usize) {
     );
     let ep = lanes(count, "generation");
     let cp = lanes(count, "consumer-generation");
-    let calls = install(&pool, &ep, None).await;
+    let calls = install(&pool, &ep, None, false).await;
     let binding = call::NativeCallExecution::test_binding(&f);
     *calls.calls.lock().unwrap() = Some(binding.clone());
     let consumer_calls = Arc::new(AtomicUsize::new(0));
@@ -254,7 +256,7 @@ async fn pressure(count: usize) {
             hold: consumer_hold.clone(),
         })
         .unwrap();
-    let consumers = install(&pool, &cp, None).await;
+    let consumers = install(&pool, &cp, None, true).await;
     *consumers.consumers.lock().unwrap() = Some(consumer::NativeConsumerExecution::test_binding(
         Arc::new(registry),
         f.budget.clone(),
@@ -285,7 +287,7 @@ async fn pressure(count: usize) {
         super::super::catalog::CatalogSnapshot::new(&catalog, &f.core.connection).unwrap(),
     );
     let provider_ep = lanes(1, "provider-generation");
-    let provider = install(&pool, &provider_ep, Some(snapshot.clone())).await;
+    let provider = install(&pool, &provider_ep, Some(snapshot.clone()), false).await;
     let rounds =
         std::env::var("LINGSHU_PRESSURE_ROUNDS").map_or(2, |v| v.parse::<usize>().unwrap());
     assert!((2..=20).contains(&rounds));

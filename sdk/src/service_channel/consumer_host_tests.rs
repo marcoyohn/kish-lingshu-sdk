@@ -508,6 +508,47 @@ async fn native_event_targets_one_member_per_group_retries_only_failed_group_and
         std::fs::write(std::path::Path::new(&directory).join("event-trace.json"),
             serde_json::to_vec(&json!({"event_id":receipt.event_id.get(), "root":trace_root, "handlers":observed_traces, "verified_control_reply_traces": super::super::trace::VERIFIED_CONTROL_TRACES.load(Ordering::SeqCst)})).unwrap()).unwrap();
     }
+    if let Ok(directory) = std::env::var("LINGSHU_PRESENCE_RESTART_MARKERS") {
+        let directory = std::path::PathBuf::from(directory);
+        let sessions_before_restart = managed.rotation_status().session_ids;
+        let roles_before_restart: Vec<_> = managed
+            .role_statuses()
+            .into_iter()
+            .map(|r| r.role_generation)
+            .collect();
+        std::fs::write(directory.join("ready"), b"ready").unwrap();
+        tokio::time::timeout(Duration::from_secs(45), async {
+            let mut renew = tokio::time::interval(Duration::from_secs(5));
+            while !directory.join("resumed").exists() {
+                tokio::select! {
+                    _ = renew.tick() => {
+                        // The secondary role is deliberately unmanaged in this
+                        // fixture. Keep its finite authority live during drain.
+                        secondary.refresh_authorization().await.unwrap();
+                        let renewed = secondary.renew_role_leases(&mut [&mut other]).await.unwrap();
+                        assert_eq!(renewed[0].status, 200);
+                        secondary.confirm_role_route(&mut other).await.unwrap();
+                    }
+                    _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            managed.rotation_status().session_ids,
+            sessions_before_restart
+        );
+        assert_eq!(
+            managed
+                .role_statuses()
+                .into_iter()
+                .map(|r| r.role_generation)
+                .collect::<Vec<_>>(),
+            roles_before_restart
+        );
+        std::fs::write(directory.join("same-sessions"), b"verified").unwrap();
+    }
     let good_before_bridge = first.good.load(Ordering::SeqCst) + second.good.load(Ordering::SeqCst);
     let payload_json = "{ \"sequence\" : 7, \"fail_once\" : true }";
     dispatch

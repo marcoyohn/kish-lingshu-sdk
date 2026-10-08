@@ -155,6 +155,22 @@ impl InstanceRoute {
         ))
     }
 
+    pub fn consumer_presence_key(
+        &self,
+        lane: &LaneIdentity,
+        owner: &PlatformControlRoute,
+    ) -> Result<ExactRouteKey, TransportContractError> {
+        if owner.deployment != self.deployment || lane.lane.index() != 0 {
+            return Err(TransportContractError::WrongTarget);
+        }
+        ExactRouteKey::new(format!(
+            "{}/presence/{}/{}",
+            self.invoke_key(lane)?.as_str(),
+            owner.platform_node.key_segment(),
+            owner.boot_epoch.key_segment()
+        ))
+    }
+
     pub fn catalog_key(&self, digest: &str) -> Result<ExactRouteKey, TransportContractError> {
         if digest.len() != 64
             || !digest
@@ -203,6 +219,14 @@ impl CallReportRoute {
 }
 
 impl PlatformControlRoute {
+    pub fn consumer_metadata_key(&self) -> Result<ExactRouteKey, TransportContractError> {
+        ExactRouteKey::new(format!(
+            "ls/v1/{}/platform/{}/{}/consumers/metadata",
+            self.deployment.key_segment(),
+            self.platform_node.key_segment(),
+            self.boot_epoch.key_segment()
+        ))
+    }
     pub fn publication_key(&self) -> Result<ExactRouteKey, TransportContractError> {
         ExactRouteKey::new(format!(
             "ls/v1/{}/platform/{}/{}/publish",
@@ -565,6 +589,30 @@ mod tests {
         assert!(DataLaneId::new(4).is_err());
         assert_ne!(id("A").key_segment(), id("a").key_segment());
         assert_ne!(id("é").key_segment(), id("c3a9").key_segment());
+    }
+
+    #[test]
+    fn consumer_presence_binds_metadata_owner_and_first_lane() {
+        let r = route();
+        let owner = PlatformControlRoute {
+            deployment: r.deployment.clone(),
+            platform_node: id("node"),
+            boot_epoch: id("boot"),
+        };
+        let token = r.consumer_presence_key(&lane(0, "epoch"), &owner).unwrap();
+        let mut next = owner.clone();
+        next.boot_epoch = id("next");
+        assert_ne!(
+            token,
+            r.consumer_presence_key(&lane(0, "epoch"), &next).unwrap()
+        );
+        assert_ne!(
+            owner.consumer_metadata_key().unwrap(),
+            next.consumer_metadata_key().unwrap()
+        );
+        assert!(r.consumer_presence_key(&lane(1, "epoch"), &owner).is_err());
+        next.deployment = id("foreign");
+        assert!(r.consumer_presence_key(&lane(0, "epoch"), &next).is_err());
     }
 
     #[test]

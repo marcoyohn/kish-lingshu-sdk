@@ -36,7 +36,7 @@ async fn installed_call_role_executes_and_cancels_without_blocking_its_control_w
     let deadline = role.role_deadline;
     let expires = role.lease_window.borrow().expires_at_ms;
     assert!(pool
-        .install_role_declarations(&ep, "generation", expires, deadline, None)
+        .install_role_declarations(&ep, "generation", expires, deadline, None, false)
         .await
         .is_err());
     assert!(pool
@@ -189,7 +189,7 @@ async fn setup(
     let deadline = Instant::now() + Duration::from_secs(30);
     let expires = chrono::Utc::now().timestamp_millis() + 30000;
     let listener = pool
-        .install_role_declarations(&ep, "generation", expires, deadline, None)
+        .install_role_declarations(&ep, "generation", expires, deadline, None, false)
         .await
         .unwrap();
     assert!(listener.connectivity_gate.confirm(0));
