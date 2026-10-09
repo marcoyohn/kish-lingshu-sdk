@@ -1610,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "kish-lingshu-event-publication-sqlx"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1654,7 +1654,7 @@ dependencies = [
 
 [[package]]
 name = "kish-lingshu-sdk"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1700,7 +1700,7 @@ dependencies = [
 
 [[package]]
 name = "kish-lingshu-sdk-macros"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -5048,10 +5048,11 @@ dependencies = [
 
 [[package]]
 name = "zenss-client-sdk"
-version = "0.5.2"
-source = "git+https://github.com/marcoyohn/zenss-sdk?rev=894bff4476aedb67eddadd70b98fd32a8604d943#894bff4476aedb67eddadd70b98fd32a8604d943"
+version = "0.6.0"
+source = "git+https://github.com/marcoyohn/zenss-sdk?rev=e53295c95abf09cc692d4d69b208154d48d69e04#e53295c95abf09cc692d4d69b208154d48d69e04"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64",
  "futures-util",
  "metrics",
@@ -5069,8 +5070,8 @@ dependencies = [
 
 [[package]]
 name = "zenss-contracts"
-version = "0.5.2"
-source = "git+https://github.com/marcoyohn/zenss-sdk?rev=894bff4476aedb67eddadd70b98fd32a8604d943#894bff4476aedb67eddadd70b98fd32a8604d943"
+version = "0.6.0"
+source = "git+https://github.com/marcoyohn/zenss-sdk?rev=e53295c95abf09cc692d4d69b208154d48d69e04#e53295c95abf09cc692d4d69b208154d48d69e04"
 dependencies = [
  "serde",
  "thiserror 2.0.21",

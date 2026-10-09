@@ -1,6 +1,6 @@
 [package]
 name = "kish-lingshu-sdk"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Rust SDK for Kish Lingshu application integrations"
@@ -69,7 +69,7 @@ service-http = ["service-execution", "service-auth", "dep:axum", "dep:tokio", "d
 test-support = ["kish-lingshu-runtime-contract/test-support"]
 
 [dependencies]
-zenss-client-sdk = { git = "https://github.com/marcoyohn/zenss-sdk", rev = "894bff4476aedb67eddadd70b98fd32a8604d943", optional = true }
+zenss-client-sdk = { git = "https://github.com/marcoyohn/zenss-sdk", rev = "e53295c95abf09cc692d4d69b208154d48d69e04", optional = true }
 async-stream = { workspace = true, optional = true }
 async-trait = { workspace = true }
 axum = { workspace = true, optional = true }
@@ -87,7 +87,7 @@ jsonschema = { workspace = true, optional = true }
 kish-lingshu-event-dispatch-contract = { workspace = true }
 kish-lingshu-foundation-contract = { workspace = true }
 kish-lingshu-runtime-contract = { workspace = true }
-kish-lingshu-sdk-macros = { path = "macros", version = "=0.5.0", optional = true }
+kish-lingshu-sdk-macros = { path = "macros", version = "=0.5.1", optional = true }
 metrics = { workspace = true, optional = true }
 percent-encoding = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
@@ -108,7 +108,7 @@ uuid = { workspace = true }
 zenoh = { version = "=1.10.1", default-features = false, features = ["transport_tcp", "transport_tls"], optional = true }
 
 [dev-dependencies]
-zenss-client-sdk = { git = "https://github.com/marcoyohn/zenss-sdk", rev = "894bff4476aedb67eddadd70b98fd32a8604d943", features = ["test-support"] }
+zenss-client-sdk = { git = "https://github.com/marcoyohn/zenss-sdk", rev = "e53295c95abf09cc692d4d69b208154d48d69e04", features = ["test-support"] }
 kish-lingshu-runtime-contract = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

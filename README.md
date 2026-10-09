@@ -56,6 +56,16 @@ Local Workspace/Sandbox execution, permission journals and CLI presentation belo
 to the source product and are not part of the public SDK export.
 
 
+### v0.5.1
+
+Pins both normal and test dependencies to public ZenSS Client SDK v0.6.0
+(`e53295c95abf09cc692d4d69b208154d48d69e04`). Applications continue to use
+independent ManagedPool sessions, including authenticated intranet TCP and
+Provider/Call/Consumer/Dispatch. The optional hosted Runtime adapter is not
+selected. Native Host/Build Kit stays v0.5.0; no database or server upgrade is
+required. SDK/macros/SQLx journal are v0.5.1; unchanged contracts remain v0.3.1
+and are selected from the same public release tag.
+
 ### v0.5.0
 
 Native physical transport now delegates to public `zenss-client-sdk` v0.5.2:
