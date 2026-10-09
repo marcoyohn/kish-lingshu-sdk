@@ -629,7 +629,7 @@ impl ServiceChannelSessions {
         if self.closed.borrow().is_some() || Instant::now() >= self.authorization_deadline() {
             return Err(ChannelSessionError::AuthorityExpired);
         }
-        if self.task.as_ref().is_none_or(|task| task.is_finished()) {
+        if !self.transport.is_running() {
             return Err(ChannelSessionError::CleanupFailed);
         }
         Ok(())
@@ -1079,7 +1079,7 @@ impl ServiceChannelSessions {
         );
         let mut physical = self.closed.clone();
         let mut logical = connection.subscribe_closed();
-        let mut authority = self.authority.subscribe();
+        let mut authority = self.authority.clone();
         let generation = generation.to_owned();
         let (stop, mut stopped) = watch::channel(false);
         let draining_handoff = Arc::new(AtomicBool::new(false));

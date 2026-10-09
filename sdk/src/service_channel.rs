@@ -16,7 +16,7 @@ use kish_lingshu_foundation_contract::{
     },
     ServiceInstanceRegistration,
 };
-use rcgen::{CertificateParams, DistinguishedName, KeyPair, PKCS_ED25519};
+use rcgen::KeyPair;
 use std::{fmt, time::Duration};
 use tokio::time::Instant;
 
@@ -175,20 +175,15 @@ fn prepare_request_for_transport(
     ),
     ServiceAuthError,
 > {
-    let key =
-        KeyPair::generate_for(&PKCS_ED25519).map_err(|_| ServiceAuthError::InvalidCredential)?;
-    let mut params = CertificateParams::default();
-    params.distinguished_name = DistinguishedName::new();
+    let mut names = Vec::new();
     let plaintext = if transport == ChannelTransport::IntranetPlaintext {
         let key = plaintext::PlaintextKey::generate()?;
-        params.subject_alt_names.push(key.csr_name()?);
+        names.push(key.csr_name()?);
         Some(key)
     } else {
         None
     };
-    let csr_pem = params
-        .serialize_request(&key)
-        .and_then(|csr| csr.pem())
+    let (key, csr_pem) = zenss_client_sdk::credentials::signing_request(names)
         .map_err(|_| ServiceAuthError::InvalidCredential)?;
     let request = ChannelBootstrapRequest {
         protocol_version: ProtocolVersion::V1,

@@ -125,7 +125,7 @@ impl ServiceChannelSessions {
         if self.closed.borrow().is_some() || Instant::now() >= *self.authority.borrow() {
             return Err(ChannelSessionError::AuthorityExpired);
         }
-        if self.task.as_ref().is_none_or(|task| task.is_finished()) {
+        if !self.transport.is_running() {
             return Err(ChannelSessionError::CleanupFailed);
         }
         let initial = &self.identity.credential.response;

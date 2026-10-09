@@ -1,6 +1,6 @@
 [package]
 name = "kish-lingshu-sdk"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Rust SDK for Kish Lingshu application integrations"
@@ -49,11 +49,11 @@ service-auth-core = [
   "kish-lingshu-foundation-contract/service-auth",
 ]
 # HTTPS credential preparation only; does not enable a business transport or listener.
-service-channel = ["service-auth-core", "kish-lingshu-runtime-contract/service-transport", "dep:rcgen"]
+service-channel = ["dep:zenss-client-sdk", "service-auth-core", "kish-lingshu-runtime-contract/service-transport", "dep:rcgen"]
 # Finite outbound TLS sessions only; route/role activation remains separate.
 service-zenoh = ["service-channel", "dep:base64", "dep:metrics", "dep:zenoh", "dep:tracing", "dep:tracing-subscriber"]
 # Explicit authenticated, unencrypted private-network profile; never a fallback.
-service-plaintext = ["service-zenoh", "zenoh/auth_pubkey", "dep:rsa", "dep:rand"]
+service-plaintext = ["service-zenoh", "zenoh/auth_pubkey", "zenss-client-sdk/plaintext", "dep:rsa", "dep:rand"]
 # Explicit finite Call bindings; Async additionally requires enable_async_calls.
 service-call-zenoh = ["service-zenoh", "service-execution"]
 user-task-completion = [
@@ -69,6 +69,7 @@ service-http = ["service-execution", "service-auth", "dep:axum", "dep:tokio", "d
 test-support = ["kish-lingshu-runtime-contract/test-support"]
 
 [dependencies]
+zenss-client-sdk = { git = "https://github.com/marcoyohn/zenss-sdk", rev = "894bff4476aedb67eddadd70b98fd32a8604d943", optional = true }
 async-stream = { workspace = true, optional = true }
 async-trait = { workspace = true }
 axum = { workspace = true, optional = true }
@@ -86,7 +87,7 @@ jsonschema = { workspace = true, optional = true }
 kish-lingshu-event-dispatch-contract = { workspace = true }
 kish-lingshu-foundation-contract = { workspace = true }
 kish-lingshu-runtime-contract = { workspace = true }
-kish-lingshu-sdk-macros = { path = "macros", version = "=0.4.1", optional = true }
+kish-lingshu-sdk-macros = { path = "macros", version = "=0.5.0", optional = true }
 metrics = { workspace = true, optional = true }
 percent-encoding = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
@@ -107,6 +108,7 @@ uuid = { workspace = true }
 zenoh = { version = "=1.10.1", default-features = false, features = ["transport_tcp", "transport_tls"], optional = true }
 
 [dev-dependencies]
+zenss-client-sdk = { git = "https://github.com/marcoyohn/zenss-sdk", rev = "894bff4476aedb67eddadd70b98fd32a8604d943", features = ["test-support"] }
 kish-lingshu-runtime-contract = { workspace = true, features = ["test-support"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

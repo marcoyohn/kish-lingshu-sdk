@@ -4,7 +4,7 @@ use crate::ServiceAuthError;
 
 pub(super) struct PlaintextKey {
     #[cfg(feature = "service-plaintext")]
-    key: rsa::RsaPrivateKey,
+    key: zenss_client_sdk::credentials::PossessionKey,
 }
 
 #[cfg(all(test, feature = "service-plaintext"))]
@@ -38,7 +38,7 @@ impl PlaintextKey {
     pub(super) fn generate() -> Result<Self, ServiceAuthError> {
         #[cfg(feature = "service-plaintext")]
         {
-            rsa::RsaPrivateKey::new(&mut rand::rngs::OsRng, 2048)
+            zenss_client_sdk::credentials::PossessionKey::generate()
                 .map(|key| Self { key })
                 .map_err(|_| ServiceAuthError::InvalidCredential)
         }
@@ -49,14 +49,10 @@ impl PlaintextKey {
     pub(super) fn csr_name(&self) -> Result<rcgen::SanType, ServiceAuthError> {
         #[cfg(feature = "service-plaintext")]
         {
-            use rsa::pkcs1::EncodeRsaPublicKey;
-            use sha2::{Digest, Sha256};
-            let der = self
+            let fingerprint = self
                 .key
-                .to_public_key()
-                .to_pkcs1_der()
+                .fingerprint()
                 .map_err(|_| ServiceAuthError::InvalidCredential)?;
-            let fingerprint = format!("{:x}", Sha256::digest(der.as_bytes()));
             let name = format!("{}{fingerprint}",
                 kish_lingshu_foundation_contract::service_transport::bootstrap::TCP_PUBLIC_KEY_SAN_PREFIX);
             Ok(rcgen::SanType::URI(
@@ -70,18 +66,12 @@ impl PlaintextKey {
 
     #[cfg(feature = "service-plaintext")]
     pub(super) fn native_config(&self) -> Result<serde_json::Value, ServiceAuthError> {
-        use rsa::pkcs1::{EncodeRsaPrivateKey, EncodeRsaPublicKey, LineEnding};
-        let public = self
-            .key
-            .to_public_key()
-            .to_pkcs1_pem(LineEnding::LF)
-            .map_err(|_| ServiceAuthError::InvalidCredential)?;
-        let private = self
-            .key
-            .to_pkcs1_pem(LineEnding::LF)
-            .map_err(|_| ServiceAuthError::InvalidCredential)?;
-        Ok(serde_json::json!({"pubkey": {
-            "public_key_pem": public, "private_key_pem": private.as_str()
-        }}))
+        self.key
+            .native_config()
+            .map_err(|_| ServiceAuthError::InvalidCredential)
+    }
+    #[cfg(feature = "service-plaintext")]
+    pub(super) fn platform_key(&self) -> &zenss_client_sdk::credentials::PossessionKey {
+        &self.key
     }
 }

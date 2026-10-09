@@ -1,67 +1,25 @@
 //! Finite, outbound-only physical sessions. No declarations, role renewal,
 //! business replay or publication recovery run in this lifecycle owner.
 use super::ServiceChannelIdentity;
-use base64::{engine::general_purpose::STANDARD, Engine};
 use kish_lingshu_foundation_contract::service_transport::{
-    bootstrap::ChannelEndpoint,
     channel::{ChannelAuthorization, ChannelRotationFinalization, MAX_CHANNEL_CONTROL_BYTES},
     MessageKind, ProtocolVersion, RouteIdentity, TransportEnvelope, MAX_CONTROL_PAYLOAD_BYTES,
-    MAX_DATA_LANES, MAX_ENVELOPE_OVERHEAD_BYTES,
+    MAX_ENVELOPE_OVERHEAD_BYTES,
 };
 use std::{fmt, time::Duration};
-use tokio::{sync::watch, task::JoinHandle, time::Instant};
+use tokio::{sync::watch, time::Instant};
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-// Stock CloseBuilder has a ten-second internal timeout. Leave it time to
-// finish rather than cancelling its cleanup with an earlier outer deadline.
-const CLOSE_TIMEOUT: Duration = Duration::from_secs(12);
+pub use zenss_client_sdk::{
+    CloseReason as ChannelCloseReason, TransportError as ChannelSessionError,
+};
+use zenss_client_sdk::{ManagedPool, PoolLayout, PoolMetrics};
 
-// Cancellation or a panicking lifecycle task is not proof that native cleanup
-// completed. Reserve that capacity until the logical connection is replaced.
-struct SessionPermit(Option<tokio::sync::OwnedSemaphorePermit>);
-impl SessionPermit {
-    fn release(&mut self) {
-        self.0.take();
-    }
-}
-impl Drop for SessionPermit {
-    fn drop(&mut self) {
-        if let Some(permit) = self.0.take() {
-            permit.forget();
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum ChannelSessionError {
-    #[error("invalid channel session configuration")]
-    InvalidConfig,
-    #[error("channel sessions require a Tokio multi-thread runtime")]
-    UnsupportedRuntime,
-    #[error("logical service connection channel capacity exhausted")]
-    CapacityExceeded,
-    #[error("channel authority expired")]
-    AuthorityExpired,
-    #[error("logical service connection closed")]
-    Closed,
-    #[error("channel connection failed")]
-    Transport,
-    #[error("invalid channel control response")]
-    InvalidResponse,
-    #[error("managed certificate rotation failed")]
-    RotationFailed,
-    #[error("channel cleanup failed")]
-    CleanupFailed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChannelCloseReason {
-    Explicit,
-    ConnectionClosed,
-    RotationFailed,
-    AuthorityExpired,
-    CleanupFailed,
-}
+pub(super) const POOL_METRICS: PoolMetrics = PoolMetrics {
+    pools: "lingshu_sdk_channel_managed_pools",
+    connected_lanes: "lingshu_sdk_channel_connected_lanes",
+    topology_changes: "lingshu_sdk_channel_topology_changes_total",
+    terminations: "lingshu_sdk_channel_terminations_total",
+};
 
 /// One independent Session per lane; cloning a Session never increases this count.
 #[derive(Debug, Clone, Copy)]
@@ -79,9 +37,7 @@ impl Default for ChannelSessionConfig {
 }
 impl ChannelSessionConfig {
     pub fn new(lanes: usize) -> Result<Self, ChannelSessionError> {
-        if !(1..=MAX_DATA_LANES).contains(&lanes) {
-            return Err(ChannelSessionError::InvalidConfig);
-        }
+        PoolLayout::new(lanes)?;
         Ok(Self {
             lanes,
             dedicated_control: false,
@@ -91,9 +47,7 @@ impl ChannelSessionConfig {
     /// same finite identity and four-Session connection cap; four data lanes
     /// therefore cannot also request a dedicated control Session.
     pub fn with_control_lane(mut self) -> Result<Self, ChannelSessionError> {
-        if self.lanes >= MAX_DATA_LANES {
-            return Err(ChannelSessionError::InvalidConfig);
-        }
+        PoolLayout::new(self.lanes)?.with_control_lane()?;
         self.dedicated_control = true;
         Ok(self)
     }
@@ -115,6 +69,14 @@ impl ChannelSessionConfig {
             config
         }
     }
+    fn platform(self) -> PoolLayout {
+        let layout = PoolLayout::new(self.lanes).expect("validated layout");
+        if self.dedicated_control {
+            layout.with_control_lane().expect("validated control lane")
+        } else {
+            layout
+        }
+    }
     pub fn lanes(self) -> usize {
         self.lanes
     }
@@ -128,13 +90,11 @@ pub struct ServiceChannelSessions {
     pub(super) identity: ServiceChannelIdentity,
     pub(super) sessions: Vec<zenoh::Session>,
     config: ChannelSessionConfig,
-    stop: watch::Sender<bool>,
     pub(super) closed: watch::Receiver<Option<ChannelCloseReason>>,
-    pub(super) task: Option<JoinHandle<Result<(), ChannelSessionError>>>,
-    cleanup_failed: bool,
+    pub(super) transport: ManagedPool,
     pub(super) rotation_finalized: bool,
     pub(super) report_draining: bool,
-    pub(super) authority: watch::Sender<Instant>,
+    pub(super) authority: watch::Receiver<Instant>,
     pub(super) connectivity: watch::Receiver<super::ChannelConnectivityStatus>,
     #[cfg(feature = "service-call-zenoh")]
     pub(super) call_query_slots: std::sync::Arc<tokio::sync::Semaphore>,
@@ -175,8 +135,8 @@ impl ServiceChannelSessions {
             .saturating_sub(now)
             .max(0) as u64;
         let limit = Instant::now() + Duration::from_millis(remaining);
+        self.transport.update_deadline(deadline.min(limit))?;
         self.report_draining = true;
-        self.authority.send_replace(deadline.min(limit));
         Ok(())
     }
     pub(super) fn authorization_deadline(&self) -> Instant {
@@ -323,7 +283,7 @@ impl ServiceChannelSessions {
         if self.closed.borrow().is_some() || Instant::now() >= *self.authority.borrow() {
             return Err(ChannelSessionError::AuthorityExpired);
         }
-        if self.task.as_ref().is_none_or(|task| task.is_finished()) {
+        if !self.transport.is_running() {
             return Err(ChannelSessionError::CleanupFailed);
         }
         let started = Instant::now();
@@ -409,7 +369,7 @@ impl ServiceChannelSessions {
         if self.closed.borrow().is_some() || Instant::now() >= *self.authority.borrow() {
             return Err(ChannelSessionError::AuthorityExpired);
         }
-        if self.task.as_ref().is_none_or(|task| task.is_finished()) {
+        if !self.transport.is_running() {
             return Err(ChannelSessionError::CleanupFailed);
         }
         let remaining = (authority.authorization_expires_unix_ms
@@ -426,7 +386,7 @@ impl ServiceChannelSessions {
         if next <= Instant::now() {
             return Err(ChannelSessionError::AuthorityExpired);
         }
-        self.authority.send_replace(next);
+        self.transport.update_deadline(next)?;
         observation.reply_verified();
         Ok(authority)
     }
@@ -461,7 +421,7 @@ impl ServiceChannelSessions {
         if self.closed.borrow().is_some() || Instant::now() >= self.authorization_deadline() {
             return Err(ChannelSessionError::AuthorityExpired);
         }
-        if self.task.as_ref().is_none_or(|task| task.is_finished()) {
+        if !self.transport.is_running() {
             return Err(ChannelSessionError::CleanupFailed);
         }
         let authority = &receipt.authorization;
@@ -476,135 +436,58 @@ impl ServiceChannelSessions {
             return Err(ChannelSessionError::AuthorityExpired);
         }
         // No await between validating this signed ACK and removing the local cap.
+        self.transport.update_deadline(next)?;
         self.rotation_finalized = true;
-        self.authority.send_replace(next);
         Ok(receipt)
     }
     pub(super) fn request_close(&self) {
-        self.stop.send_replace(true);
+        self.transport.request_close();
     }
     pub async fn close(&mut self) -> Result<(), ChannelSessionError> {
-        self.stop.send_replace(true);
-        if let Some(task) = self.task.as_mut() {
-            // Keep the handle if the caller cancels this wait; a later close
-            // must still join the cleanup rather than returning prematurely.
-            let result = task.await;
-            self.task.take();
-            match result {
-                Ok(result) => self.cleanup_failed = result.is_err(),
-                Err(_) => {
-                    // Record the terminal failure before awaiting fallback
-                    // cleanup, so cancellation cannot hide the failed join.
-                    self.cleanup_failed = true;
-                    let _ = close_sessions(&self.sessions).await;
-                }
-            }
-        }
-        if self.cleanup_failed {
-            Err(ChannelSessionError::CleanupFailed)
-        } else {
-            Ok(())
-        }
-    }
-}
-impl Drop for ServiceChannelSessions {
-    fn drop(&mut self) {
-        self.stop.send_replace(true);
+        self.transport.close().await
     }
 }
 
-pub(super) fn client_config(
+fn transport_options(
     identity: &ServiceChannelIdentity,
-    lane: usize,
-) -> Result<zenoh::Config, ChannelSessionError> {
+) -> Result<zenss_client_sdk::transport::TransportOptions, ChannelSessionError> {
+    use zenss_client_sdk::transport::{TransportCredentials, TransportOptions};
     let certificate = &identity.credential.response.certificate;
-    // Official in-memory secret fields: no key file or caller-provided locator
-    // suffix can weaken verification. Never serialize this object for logging.
-    #[allow(unused_mut)]
-    let mut value = serde_json::json!({
-        "mode": "client",
-        "listen": {"endpoints": []},
-        "connect": {"endpoints": ordered_endpoints(&identity.credential.response.endpoints, lane), "timeout_ms": 0,
-            "exit_on_failure": true,
-            // Disable only the native initial retry loop; the SDK supplies one
-            // five-second whole-pool deadline. Native reconnect still reads
-            // this finite backoff and stops after its first successful Router.
-            "retry": {"period_init_ms": 250, "period_max_ms": 5000, "period_increase_factor": 2.0}},
-        "scouting": {"multicast": {"enabled": false}, "gossip": {"enabled": false}},
-        "adminspace": {"enabled": false},
-        "transport": {"unicast": {
-            // One active Router plus a transient replacement. Endpoint lists
-            // are failover choices, not permission for eight live transports.
-            "max_sessions": 2, "max_links": 1, "accept_pending": 1,
-            "open_timeout": 5000, "accept_timeout": 5000,
-            "lowlatency": false, "qos": {"enabled": false}},
-            "link": {"protocols": ["tls"],
-            // Native framing/keys/receipt need room beyond the product envelope.
-            "rx": {"buffer_size": 65535, "max_message_size": MAX_CONTROL_PAYLOAD_BYTES + MAX_ENVELOPE_OVERHEAD_BYTES + 32 * 1024},
-            // Universal/no-QoS uses data. Sixteen lazy batches absorb bounded
-            // bursts; keep the 250ms close and every other priority at two.
-            "tx": {"batch_size": 65535, "queue": {
-                "size": {"control": 2, "real_time": 2, "interactive_high": 2,
-                    "interactive_low": 2, "data_high": 2, "data": 16, "data_low": 2, "background": 2},
-                "allocation": {"mode": "lazy"},
-                "congestion_control": {"block": {"wait_before_close": 250000}}
-            }},
-            "tls": {
-                // Kernel receive storage is distinct from native RX batch pools.
-                // Linux requires net.core.rmem_max >= 1MiB for this request.
-                "so_rcvbuf": 1024 * 1024,
-                "root_ca_certificate_base64": STANDARD.encode(&certificate.root_ca_pem),
-                "connect_certificate_base64": STANDARD.encode(&certificate.certificate_pem),
-                "connect_private_key_base64": STANDARD.encode(identity.credential.key.serialize_pem()),
-                "enable_mtls": true, "verify_name_on_connect": true, "close_link_on_expiration": true
-            }}}
-    });
-    if let Some(key) = &identity.credential.plaintext {
+    let credentials = if let Some(key) = &identity.credential.plaintext {
         #[cfg(feature = "service-plaintext")]
         {
-            value["transport"]["link"]["protocols"] = serde_json::json!(["tcp"]);
-            value["transport"]["link"]
-                .as_object_mut()
-                .unwrap()
-                .remove("tls");
-            value["transport"]["link"]["tcp"] = serde_json::json!({"so_rcvbuf": 1024 * 1024});
-            value["transport"]["auth"] = key
-                .native_config()
-                .map_err(|_| ChannelSessionError::InvalidConfig)?;
+            TransportCredentials::IntranetPlaintext(key.platform_key().clone())
         }
         #[cfg(not(feature = "service-plaintext"))]
         {
             let _ = key;
             return Err(ChannelSessionError::InvalidConfig);
         }
-    }
-    zenoh::Config::from_json5(&value.to_string()).map_err(|_| ChannelSessionError::InvalidConfig)
+    } else {
+        TransportCredentials::Mtls {
+            root_ca: certificate.root_ca_pem.clone(),
+            certificate: certificate.certificate_pem.clone(),
+            private_key: identity.credential.key.serialize_pem(),
+        }
+    };
+    Ok(TransportOptions {
+        endpoints: identity
+            .credential
+            .response
+            .endpoints
+            .iter()
+            .map(|e| e.as_str().to_owned())
+            .collect(),
+        credentials,
+        max_message_bytes: MAX_CONTROL_PAYLOAD_BYTES + MAX_ENVELOPE_OVERHEAD_BYTES + 32 * 1024,
+    })
 }
-
-fn ordered_endpoints(endpoints: &[ChannelEndpoint], lane: usize) -> Vec<&str> {
-    (0..endpoints.len())
-        .map(|offset| endpoints[(lane + offset) % endpoints.len()].as_str())
-        .collect()
-}
-
-async fn close_sessions(sessions: &[zenoh::Session]) -> Result<(), ChannelSessionError> {
-    tokio::time::timeout(
-        CLOSE_TIMEOUT,
-        futures::future::join_all(sessions.iter().map(|s| async move { s.close().await })),
-    )
-    .await
-    .map_err(|_| ChannelSessionError::CleanupFailed)?
-    .into_iter()
-    .try_for_each(|r| r.map_err(|_| ChannelSessionError::CleanupFailed))
-}
-
-async fn cleanup_pool(
-    sessions: &[zenoh::Session],
-    permit: &mut SessionPermit,
-) -> Result<(), ChannelSessionError> {
-    close_sessions(sessions).await?;
-    permit.release();
-    Ok(())
+#[cfg(test)]
+pub(super) fn client_config(
+    identity: &ServiceChannelIdentity,
+    lane: usize,
+) -> Result<zenoh::Config, ChannelSessionError> {
+    transport_options(identity)?.configuration(lane)
 }
 
 async fn logical_closed(receiver: &mut watch::Receiver<Option<crate::ServiceAuthError>>) {
@@ -624,135 +507,29 @@ impl ServiceChannelIdentity {
         self,
         config: ChannelSessionConfig,
     ) -> Result<ServiceChannelSessions, ChannelSessionError> {
-        // Stock Zenoh panics inside a current-thread scheduler. Reject before
-        // handing it any credential or creating a partial network runtime.
-        if !tokio::runtime::Handle::try_current().is_ok_and(|handle| {
-            handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread
-        }) {
-            return Err(ChannelSessionError::UnsupportedRuntime);
-        }
         self.connection
             .ensure_open()
             .map_err(|_| ChannelSessionError::Closed)?;
-        if Instant::now() >= self.authorization_deadline {
-            return Err(ChannelSessionError::AuthorityExpired);
-        }
-        let permit = self
-            .connection
-            .channel_session_budget()
-            .try_acquire_many_owned(config.session_count() as u32)
-            .map_err(|_| {
-                if self.connection.ensure_open().is_err() {
-                    ChannelSessionError::Closed
-                } else {
-                    ChannelSessionError::CapacityExceeded
-                }
-            })?;
-        let mut permit = SessionPermit(Some(permit));
         let mut root_closed = self.connection.subscribe_closed();
-        let mut sessions = Vec::with_capacity(config.session_count());
-        // Bound the whole pool, rather than granting each lane a fresh timeout.
-        let deadline = (Instant::now() + CONNECT_TIMEOUT).min(self.authorization_deadline);
-        for lane in 0..config.session_count() {
-            let native_config = match client_config(&self, lane) {
-                Ok(config) => config,
-                Err(error) => {
-                    if cleanup_pool(&sessions, &mut permit).await.is_err() {
-                        return Err(ChannelSessionError::CleanupFailed);
-                    }
-                    return Err(error);
-                }
-            };
-            let result = tokio::select! {
-                _ = logical_closed(&mut root_closed) => Err(ChannelSessionError::Closed),
-                _ = tokio::time::sleep_until(deadline) => {
-                    Err(if Instant::now() >= self.authorization_deadline {
-                        ChannelSessionError::AuthorityExpired
-                    } else { ChannelSessionError::Transport })
-                },
-                result = zenoh::open(native_config) => result.map_err(|_| ChannelSessionError::Transport),
-            };
-            match result {
-                Ok(session) => sessions.push(session),
-                Err(error) => {
-                    if cleanup_pool(&sessions, &mut permit).await.is_err() {
-                        return Err(ChannelSessionError::CleanupFailed);
-                    }
-                    return Err(error);
-                }
-            }
-        }
-        // A shutdown/expiry racing a successful open must clean up the whole pool.
-        if self.connection.ensure_open().is_err() || Instant::now() >= self.authorization_deadline {
-            if cleanup_pool(&sessions, &mut permit).await.is_err() {
-                return Err(ChannelSessionError::CleanupFailed);
-            }
-            return Err(if self.connection.ensure_open().is_err() {
-                ChannelSessionError::Closed
-            } else {
-                ChannelSessionError::AuthorityExpired
-            });
-        }
-        let (stop, mut stopped) = watch::channel(false);
-        let (closed, close_status) = watch::channel(None);
-        let active = sessions.clone();
-        let (authority, mut authorization) = watch::channel(self.authorization_deadline);
-        let mut connectivity = super::connectivity::ConnectivityTracker::new(
-            super::connectivity::routers(&active).await,
-            config.lanes,
-        );
-        let connectivity_status = connectivity.sender.subscribe();
-        let task = tokio::spawn(async move {
-            let mut observation = tokio::time::interval_at(
-                Instant::now() + Duration::from_secs(1),
-                Duration::from_secs(1),
-            );
-            observation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let reason = loop {
-                let deadline = *authorization.borrow_and_update();
-                tokio::select! {
-                    biased;
-                    _ = logical_closed(&mut root_closed) => break ChannelCloseReason::ConnectionClosed,
-                    _ = tokio::time::sleep_until(deadline) => {
-                        if Instant::now() >= *authorization.borrow() { break ChannelCloseReason::AuthorityExpired; }
-                    },
-                    _ = stopped.changed() => break ChannelCloseReason::Explicit,
-                    result = authorization.changed() => {
-                        if result.is_err() { break ChannelCloseReason::Explicit; }
-                    },
-                    _ = observation.tick() => connectivity.update(super::connectivity::routers(&active).await),
-                }
-            };
-            connectivity.close();
-            closed.send_replace(Some(reason));
-            let result = cleanup_pool(&active, &mut permit).await;
-            if result.is_err() {
-                closed.send_replace(Some(ChannelCloseReason::CleanupFailed));
-                // Unproven cleanup cannot release capacity to another pool.
-            }
-            let outcome = if result.is_err() {
-                "cleanup_failed"
-            } else {
-                match reason {
-                    ChannelCloseReason::Explicit => "explicit",
-                    ChannelCloseReason::ConnectionClosed => "connection_closed",
-                    ChannelCloseReason::RotationFailed => "rotation_failed",
-                    ChannelCloseReason::AuthorityExpired => "authority_expired",
-                    ChannelCloseReason::CleanupFailed => "cleanup_failed",
-                }
-            };
-            metrics::counter!("lingshu_sdk_channel_terminations_total", "outcome" => outcome)
-                .increment(1);
-            result
-        });
+        let transport = ManagedPool::open(
+            transport_options(&self)?,
+            config.platform(),
+            self.connection.channel_session_budget(),
+            self.authorization_deadline,
+            async move { logical_closed(&mut root_closed).await },
+            POOL_METRICS,
+        )
+        .await?;
+        let sessions = transport.sessions().to_vec();
+        let close_status = transport.subscribe_closed();
+        let authority = transport.subscribe_deadline();
+        let connectivity_status = transport.subscribe_connectivity();
         Ok(ServiceChannelSessions {
             identity: self,
             sessions,
             config,
-            stop,
             closed: close_status,
-            task: Some(task),
-            cleanup_failed: false,
+            transport,
             rotation_finalized: false,
             report_draining: false,
             authority,
@@ -944,8 +721,8 @@ mod tests {
             .is_none_or(|reply| reply.result().is_err()));
         assert!(connection.subscribe_closed().borrow().is_none());
         pool.refresh_authorization().await.unwrap();
-        pool.task.as_ref().unwrap().abort();
-        while !pool.task.as_ref().unwrap().is_finished() {
+        pool.transport.abort_driver_for_test();
+        while pool.transport.is_running() {
             tokio::task::yield_now().await;
         }
         assert!(matches!(
@@ -1203,23 +980,6 @@ mod tests {
         pool.close().await.unwrap();
         connection.shutdown().await;
     }
-    #[tokio::test]
-    async fn unproven_cleanup_never_releases_physical_capacity() {
-        let budget = std::sync::Arc::new(tokio::sync::Semaphore::new(2));
-        let permit = SessionPermit(Some(budget.clone().try_acquire_owned().unwrap()));
-        let task = tokio::spawn(async move {
-            let _permit = permit;
-            panic!("simulated lifecycle failure");
-        });
-        assert!(task.await.unwrap_err().is_panic());
-        assert_eq!(budget.available_permits(), 1);
-
-        let mut permit = SessionPermit(Some(budget.clone().try_acquire_owned().unwrap()));
-        assert_eq!(budget.available_permits(), 0);
-        cleanup_pool(&[], &mut permit).await.unwrap();
-        drop(permit);
-        assert_eq!(budget.available_permits(), 1);
-    }
     #[test]
     fn pool_size_is_explicit_and_bounded() {
         assert_eq!(ChannelSessionConfig::default().lanes(), 1);
@@ -1294,31 +1054,23 @@ pub(crate) fn test_sync_pool_lanes(
         connection: connection.clone(),
         authorization_deadline: deadline,
     };
-    let (stop, mut stopped) = watch::channel(false);
-    let (closed_tx, closed) = watch::channel(None);
-    let (authority, _) = watch::channel(deadline);
-    let connectivity = super::connectivity::ConnectivityTracker::new(
-        vec![Some("test-router".into()); lanes],
-        lanes,
-    )
-    .sender
-    .subscribe();
-    let owned = sessions.clone();
-    let task = tokio::spawn(async move {
-        let mut logical = connection.subscribe_closed();
-        tokio::select! {_ = stopped.wait_for(|v|*v)=>{},_ = logical.changed()=>{}};
-        close_sessions(&owned).await?;
-        closed_tx.send_replace(Some(ChannelCloseReason::Explicit));
-        Ok(())
-    });
+    let mut logical = connection.subscribe_closed();
+    let transport = ManagedPool::fixture(
+        sessions.clone(),
+        config.platform(),
+        deadline,
+        async move { logical_closed(&mut logical).await },
+        POOL_METRICS,
+    );
+    let closed = transport.subscribe_closed();
+    let authority = transport.subscribe_deadline();
+    let connectivity = transport.subscribe_connectivity();
     ServiceChannelSessions {
         identity,
         sessions,
         config,
-        stop,
         closed,
-        task: Some(task),
-        cleanup_failed: false,
+        transport,
         rotation_finalized: false,
         report_draining: false,
         authority,

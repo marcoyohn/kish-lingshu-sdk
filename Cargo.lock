@@ -1610,7 +1610,7 @@ dependencies = [
 
 [[package]]
 name = "kish-lingshu-event-publication-sqlx"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1654,7 +1654,7 @@ dependencies = [
 
 [[package]]
 name = "kish-lingshu-sdk"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -1695,11 +1695,12 @@ dependencies = [
  "url",
  "uuid",
  "zenoh",
+ "zenss-client-sdk",
 ]
 
 [[package]]
 name = "kish-lingshu-sdk-macros"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -3748,6 +3749,21 @@ dependencies = [
 
 [[package]]
 name = "toml"
+version = "0.9.12+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
+dependencies = [
+ "indexmap 2.14.2",
+ "serde_core",
+ "serde_spanned",
+ "toml_datetime 0.7.5+spec-1.1.0",
+ "toml_parser",
+ "toml_writer",
+ "winnow 0.7.15",
+]
+
+[[package]]
+name = "toml"
 version = "1.1.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "12c0ba9680044b4ce98d391a62094047eada0d64860b80166c39f4a6b5640785"
@@ -3755,10 +3771,19 @@ dependencies = [
  "indexmap 2.14.2",
  "serde_core",
  "serde_spanned",
- "toml_datetime",
+ "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
  "toml_writer",
  "winnow 1.0.4",
+]
+
+[[package]]
+name = "toml_datetime"
+version = "0.7.5+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
+dependencies = [
+ "serde_core",
 ]
 
 [[package]]
@@ -3777,7 +3802,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6975367e4d2ef766d86af01ffad14b622fecc8d4357a998fbc4deb6e9bacaf9b"
 dependencies = [
  "indexmap 2.14.2",
- "toml_datetime",
+ "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
  "winnow 1.0.4",
 ]
@@ -3936,7 +3961,7 @@ dependencies = [
  "serde_json",
  "target-triple",
  "termcolor",
- "toml",
+ "toml 1.1.5+spec-1.1.0",
 ]
 
 [[package]]
@@ -4547,6 +4572,12 @@ dependencies = [
 
 [[package]]
 name = "winnow"
+version = "0.7.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
+
+[[package]]
+name = "winnow"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
@@ -4712,6 +4743,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "serde_yaml",
+ "toml 0.9.12+spec-1.1.0",
  "tracing",
  "uhlc",
  "validated_struct",
@@ -5012,6 +5044,36 @@ dependencies = [
  "winapi",
  "zenoh-core",
  "zenoh-result",
+]
+
+[[package]]
+name = "zenss-client-sdk"
+version = "0.5.2"
+source = "git+https://github.com/marcoyohn/zenss-sdk?rev=894bff4476aedb67eddadd70b98fd32a8604d943#894bff4476aedb67eddadd70b98fd32a8604d943"
+dependencies = [
+ "anyhow",
+ "base64",
+ "futures-util",
+ "metrics",
+ "rand 0.8.8",
+ "rcgen",
+ "rsa",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+ "tokio",
+ "zenoh",
+ "zenss-contracts",
+]
+
+[[package]]
+name = "zenss-contracts"
+version = "0.5.2"
+source = "git+https://github.com/marcoyohn/zenss-sdk?rev=894bff4476aedb67eddadd70b98fd32a8604d943#894bff4476aedb67eddadd70b98fd32a8604d943"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

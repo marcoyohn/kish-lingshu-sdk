@@ -42,7 +42,8 @@ cargo check --locked --workspace --all-targets --all-features
 cargo test --locked --workspace --all-features
 ```
 
-All source dependencies are included here. Building the SDK does not require
+Product source dependencies are included here; shared client transport uses an
+immutable commit of the public ZenSS Client SDK/contracts. Building does not require
 access to the private Lingshu server repository or private Git dependencies.
 
 ## Releases
@@ -54,6 +55,20 @@ immutable. `main` contains the latest published SDK snapshot. Only maintainers a
 Local Workspace/Sandbox execution, permission journals and CLI presentation belong
 to the source product and are not part of the public SDK export.
 
+
+### v0.5.0
+
+Native physical transport now delegates to public `zenss-client-sdk` v0.5.2:
+managed session pools, TLS/authenticated intranet TCP profiles, local key/CSR
+creation, connectivity and bounded cleanup. Existing Service/Event declarations,
+Lingshu bootstrap verification, role leases, route readiness, rotation handoff and
+Dispatch acknowledgements are unchanged. Lingshu native Host/Build Kit remains
+v0.5.0. Product protocol declarations still use official Zenoh APIs.
+
+The dependency is pinned to a full public Git commit. Only ZenSS Client SDK and
+contracts are permitted in the exported closure; private Host, Plugin SDK and
+patched native Zenoh dependencies remain excluded. Existing default HTTP features
+and optional native feature names remain available.
 
 ### v0.4.1
 

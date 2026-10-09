@@ -68,7 +68,7 @@ impl ServiceChannelSessions {
                 .map_err(|_| ChannelSessionError::InvalidConfig)?,
             connection: self.identity.connection.clone(),
             closed: self.closed.clone(),
-            authority: self.authority.subscribe(),
+            authority: self.authority.clone(),
             inflight: self.publication_query_slots.clone(),
             #[cfg(test)]
             discard_acceptance: Default::default(),
