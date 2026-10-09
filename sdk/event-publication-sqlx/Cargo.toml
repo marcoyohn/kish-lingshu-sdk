@@ -1,6 +1,6 @@
 [package]
 name = "kish-lingshu-event-publication-sqlx"
-version = "0.1.0"
+version = "0.6.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "SQLx producer journal for reliable Kish Lingshu Event Dispatch publication"
@@ -9,6 +9,7 @@ description = "SQLx producer journal for reliable Kish Lingshu Event Dispatch pu
 default = ["mysql", "sqlite"]
 mysql = ["sqlx/mysql"]
 sqlite = ["sqlx/sqlite"]
+native-acceptance = ["sqlite", "kish-lingshu-sdk/event-publication-zenoh"]
 
 [dependencies]
 async-trait = { workspace = true }
@@ -20,3 +21,5 @@ sqlx = { workspace = true, features = ["chrono", "json", "macros", "migrate"] }
 [dev-dependencies]
 kish-lingshu-foundation-contract = { workspace = true }
 tokio = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }

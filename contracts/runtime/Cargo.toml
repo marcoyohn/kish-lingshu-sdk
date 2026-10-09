@@ -1,12 +1,13 @@
 [package]
 name = "kish-lingshu-runtime-contract"
-version = "0.1.0"
+version = "0.3.1"
 edition = "2021"
-license = ""
+license = "Apache-2.0"
 
 [features]
 default = []
 test-support = []
+service-transport = ["kish-lingshu-foundation-contract/service-transport", "kish-lingshu-event-dispatch-contract/service-transport"]
 
 [dependencies]
 async-trait = { workspace = true }

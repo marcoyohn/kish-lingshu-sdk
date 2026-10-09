@@ -6,12 +6,16 @@ use serde_json::Value;
 
 pub use kish_lingshu_runtime_contract::service::*;
 
+#[cfg(feature = "service-execution")]
+pub(crate) mod execution;
+#[cfg(feature = "service-execution")]
+pub use execution::ServiceEnrollmentStatus;
 #[cfg(feature = "service-http")]
 mod enrollment;
 #[cfg(feature = "service-http")]
 mod http;
 #[cfg(feature = "service-http")]
-pub use enrollment::{EnrolledService, ServiceEnrollmentStatus};
+pub use enrollment::EnrolledService;
 #[cfg(feature = "service-http")]
 pub use http::{ServiceHttpAdapter, ServiceRuntimeStatus};
 
@@ -277,6 +281,30 @@ pub struct ServiceRegistry {
 }
 
 impl ServiceRegistry {
+    /// Retain exactly one immutable operation and its existing bound handler.
+    /// Used to activate published operations independently during catalog rollout.
+    pub fn select_operation(&self, target: &OperationRef) -> Result<Self, ServiceError> {
+        let bound = self.find(target).ok_or_else(|| {
+            ServiceError::rejected("operation_not_found", "Operation is not bound")
+        })?;
+        let mut manifest = self.manifest.clone();
+        manifest
+            .services
+            .retain(|s| s.service_key == target.service_key);
+        manifest.services[0]
+            .operations
+            .retain(|o| o.operation_key == target.operation_key && o.version == target.version);
+        let mut builder = ServiceRegistryBuilder::new(manifest)?;
+        builder.handlers.insert(
+            (
+                target.service_key.clone(),
+                target.operation_key.clone(),
+                target.version.clone(),
+            ),
+            bound.handler.clone(),
+        );
+        builder.build()
+    }
     pub fn manifest(&self) -> &ServiceManifest {
         &self.manifest
     }

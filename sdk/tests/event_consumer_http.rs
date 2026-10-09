@@ -39,6 +39,8 @@ struct ExpireOrders {
 #[derive(Default)]
 struct ScheduledHandlers {
     calls: AtomicUsize,
+    delay: Duration,
+    entered: Option<Arc<tokio::sync::Notify>>,
 }
 
 #[event_dispatch(group = "order-workers", maximum_concurrency = 8)]
@@ -50,6 +52,12 @@ impl ScheduledHandlers {
         event: ExpireOrders,
     ) -> Result<Value, ConsumerError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
+        if let Some(entered) = &self.entered {
+            entered.notify_one();
+        }
+        if !self.delay.is_zero() {
+            tokio::time::sleep(self.delay).await;
+        }
         let schedule = context.schedule().expect("scheduled Event metadata");
         Ok(json!({
             "schedule_key": schedule.schedule_key,
@@ -139,6 +147,48 @@ async fn scheduled_events_use_normal_exact_route_and_expose_schedule_context() {
     );
     assert_eq!(handlers.calls.load(Ordering::Relaxed), 1);
     server.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn handler_execution_deadline_preserves_http_timeout_response() {
+    use tower::ServiceExt;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let handlers = Arc::new(ScheduledHandlers {
+        calls: AtomicUsize::new(0),
+        delay: Duration::from_secs(60),
+        entered: Some(entered.clone()),
+    });
+    let mut builder = ConsumerRegistry::builder("orders-app").unwrap();
+    builder.bind(handlers.clone()).unwrap();
+    let app = ConsumerHttpAdapter::new(Arc::new(builder.build().unwrap())).router();
+    // A valid wire deadline allows entry. Advance only after the Handler starts,
+    // avoiding the old 250ms wall-clock/request-construction race under build load.
+    let request = axum::http::Request::builder()
+        .method("POST")
+        .uri("/")
+        .header("content-type", "application/json")
+        .header(IDEMPOTENCY_HEADER, "consumption/orders/1001")
+        .header(INVOCATION_ID_HEADER, "5001")
+        .body(axum::body::Body::from(
+            serde_json::to_vec(&invocation(DeliveryMode::Sync, 10)).unwrap(),
+        ))
+        .unwrap();
+    let mut response = tokio::spawn(app.oneshot(request));
+    tokio::select! {
+        _ = entered.notified() => (),
+        early = &mut response => panic!("HTTP request ended before Handler entry: {early:?}"),
+    }
+    tokio::time::advance(Duration::from_secs(11)).await;
+    let response = response.await.unwrap().unwrap();
+    assert_eq!(response.status(), axum::http::StatusCode::REQUEST_TIMEOUT);
+    let body = axum::body::to_bytes(response.into_body(), 4096)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&body).unwrap()["code"],
+        "event_consumer_deadline_exceeded"
+    );
+    assert_eq!(handlers.calls.load(Ordering::Relaxed), 1);
 }
 
 #[tokio::test]

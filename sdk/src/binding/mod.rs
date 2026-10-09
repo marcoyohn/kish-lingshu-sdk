@@ -27,7 +27,7 @@ mod http;
 #[cfg(all(test, feature = "http-client", feature = "event-consumer-http"))]
 mod http_conformance;
 #[cfg(feature = "http-client")]
-mod retry;
+pub(crate) mod retry;
 mod runtime;
 #[cfg(feature = "http-client")]
 mod sse;

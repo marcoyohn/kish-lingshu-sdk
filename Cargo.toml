@@ -23,6 +23,7 @@ kish-lingshu-event-dispatch-contract = { "path" = "contracts/event-dispatch" }
 kish-lingshu-foundation-contract = { "path" = "contracts/foundation" }
 kish-lingshu-runtime-contract = { "path" = "contracts/runtime" }
 kish-lingshu-sdk = { "path" = "sdk", "default-features" = false }
+metrics = { "version" = "0.24.2" }
 percent-encoding = "2.3"
 proc-macro-crate = "3"
 proc-macro2 = "1"
@@ -40,5 +41,7 @@ syn = { "version" = "2", "features" = ["full"] }
 tempfile = "3.27"
 thiserror = "1.0.50"
 tokio = { "version" = "1.49.0", "features" = ["full", "macros", "rt-multi-thread", "signal"] }
+tracing = { "version" = "0.1.37", "features" = ["log"] }
+tracing-subscriber = { "version" = "0.3.17", "features" = ["env-filter"] }
 url = { "version" = "2.5.0" }
 uuid = { "version" = "1.17.0", "features" = ["v4", "v7"] }

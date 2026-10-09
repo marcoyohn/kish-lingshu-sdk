@@ -576,12 +576,23 @@ pub struct WorkflowSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<SessionId>,
     pub state: WorkflowState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// An omitted output is unavailable; an explicit JSON null is a real result.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_output"
+    )]
     pub output: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suspension: Option<SuspensionHandle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_cursor: Option<EventCursor>,
+}
+
+fn present_output<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
 }
 
 #[async_trait]
@@ -614,6 +625,24 @@ pub trait WorkflowRuntime: Send + Sync {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn workflow_snapshot_distinguishes_absent_output_from_explicit_null() {
+        let base = json!({"workflow_id":42,"workflow_instance_id":43,"root_workflow_instance_id":43,"state":"completed"});
+        let absent: WorkflowSnapshot = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(absent.output, None);
+        assert!(serde_json::to_value(absent)
+            .unwrap()
+            .get("output")
+            .is_none());
+        for value in [Value::Null, json!({"answer":42})] {
+            let mut wire = base.clone();
+            wire["output"] = value.clone();
+            let snapshot: WorkflowSnapshot = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(snapshot.output, Some(value));
+            assert_eq!(serde_json::to_value(snapshot).unwrap(), wire);
+        }
+    }
 
     #[test]
     fn workflow_signals_keep_typed_directional_shapes() {

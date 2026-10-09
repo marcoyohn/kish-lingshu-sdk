@@ -355,6 +355,13 @@ impl ConsumerRegistry {
         &self.app_id
     }
 
+    #[cfg(feature = "event-consumer-zenoh")]
+    pub(crate) fn supports_group(&self, group: &str) -> bool {
+        self.consumers.keys().any(|selector| {
+            selector.consumer_group() == group || selector.consumer_group().is_empty()
+        })
+    }
+
     fn insert(
         &mut self,
         selector: ConsumerSelector,

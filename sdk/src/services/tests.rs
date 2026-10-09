@@ -205,3 +205,33 @@ async fn native_completion_is_a_typed_call_with_four_business_outcomes() {
         ));
     }
 }
+
+#[tokio::test]
+async fn operation_projection_preserves_handler_and_rejects_sibling_or_digest_mismatch() {
+    let mut builder = ServiceRegistryBuilder::new(manifest()).unwrap();
+    let provider = Arc::new(Provider(AtomicUsize::new(0)));
+    provider
+        .clone()
+        .bind_lingshu_services(&mut builder)
+        .unwrap();
+    let registry = builder.build().unwrap();
+    let request = invocation(CallMode::Sync);
+    let selected = registry.select_operation(&request.operation).unwrap();
+    assert_eq!(selected.capabilities().len(), 1);
+    assert_eq!(selected.manifest().services[0].operations.len(), 1);
+    assert_eq!(
+        selected.invoke(request.clone()).await,
+        ServiceOutcome::Succeeded { result: json!(3) }
+    );
+    let sibling = registry
+        .capabilities()
+        .into_iter()
+        .find(|c| c.operation != request.operation)
+        .unwrap();
+    assert!(selected.definition(&sibling.operation).is_none());
+    let mut wrong = request.operation;
+    wrong.contract_digest = "wrong".into();
+    assert!(registry.select_operation(&wrong).is_err());
+    assert_eq!(provider.0.load(Ordering::Relaxed), 1);
+    assert_eq!(registry.capabilities().len(), 2);
+}

@@ -117,7 +117,7 @@ impl EventConsumer for ServiceEventConsumer {
         self.admission
             .active
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        let _active = super::http::ActiveGuard(self.admission.active.clone());
+        let _active = super::execution::ActiveGuard(self.admission.active.clone());
         let invocation = ServiceInvocation {
             admission: None,
             target_instance: None,

@@ -33,6 +33,8 @@ use kish_lingshu_runtime_contract::{
     WorkflowSignal as RuntimeWorkflowSignal,
 };
 
+#[cfg(all(test, feature = "http-client"))]
+mod observation_tests;
 mod records;
 pub use records::{
     AgentTaskPlan, ConversationScope, SessionMessage, SessionRecord, TaskPlanItem,
@@ -956,11 +958,23 @@ impl WorkflowRun {
                     .min(configured)
             })
             .unwrap_or(configured);
+        #[cfg(feature = "http-client")]
+        let deadline = tokio::time::Instant::now() + budget;
+        #[cfg(feature = "http-client")]
+        let snapshot_options = options.clone();
+        #[cfg(feature = "http-client")]
+        let stream_budget = if wait.mode == WorkflowWaitMode::UntilAction {
+            budget.saturating_sub((budget / 10).min(std::time::Duration::from_millis(500)))
+        } else {
+            budget
+        };
+        #[cfg(not(feature = "http-client"))]
+        let stream_budget = budget;
         // Commit only complete projection boundaries. Raw events() advances its
         // cursor per event, which could split a detail/state pair on timeout.
-        projector
+        let result = projector
             .wait(
-                budget,
+                stream_budget,
                 self.inner.binding.subscribe_workflow(
                     self.handle.workflow_instance_id,
                     Some(self.cursor()),
@@ -985,7 +999,31 @@ impl WorkflowRun {
                     }
                 },
             )
-            .await
+            .await;
+        #[cfg(feature = "http-client")]
+        if wait.mode == WorkflowWaitMode::UntilAction
+            && (matches!(&result, Ok(WorkflowRunResult::Pending { .. }))
+                || matches!(&result, Err(Error::Transport(failure)) if failure.kind == TransportKind::Stream))
+            && tokio::time::Instant::now() < deadline
+        {
+            // A different Writer may have completed while this process's
+            // passive event hub stayed idle. One bounded read of the original
+            // durable run can prove completion; it never resumes/retries work,
+            // replaces the safe event cursor or fabricates absent detail.
+            if let Ok(Ok(snapshot)) =
+                tokio::time::timeout_at(deadline, self.snapshot(snapshot_options)).await
+            {
+                if snapshot.state == WorkflowState::Completed {
+                    if let Some(output) = snapshot.output {
+                        return Ok(WorkflowRunResult::Completed {
+                            run: self.handle.clone(),
+                            output,
+                        });
+                    }
+                }
+            }
+        }
+        result
     }
 
     /// Explicitly return at the next suspension, including automatic waits.

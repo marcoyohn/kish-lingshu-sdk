@@ -17,6 +17,8 @@ pub use enrolled_node::{
 mod consumer;
 #[cfg(feature = "event-consumer-http")]
 mod consumer_admission;
+#[cfg(any(feature = "event-consumer-http", feature = "event-consumer-zenoh"))]
+pub(crate) mod consumer_execution;
 #[cfg(feature = "event-consumer-http")]
 mod consumer_http;
 #[cfg(feature = "event-consumer-http")]
@@ -87,6 +89,9 @@ pub use kish_lingshu_sdk_macros::{event_job, EventPayload};
 #[derive(Clone)]
 pub struct EventDispatch {
     pub(crate) inner: Arc<ClientInner>,
+    #[cfg(feature = "event-publication-zenoh")]
+    pub(crate) native_publication:
+        Option<crate::service_channel::publication::NativePublicationSource>,
 }
 
 impl EventDispatch {
@@ -111,7 +116,11 @@ impl EventDispatch {
     }
 
     pub(crate) fn new(inner: Arc<ClientInner>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            #[cfg(feature = "event-publication-zenoh")]
+            native_publication: None,
+        }
     }
 
     /// Publishes an Event and returns only after Kish Lingshu confirms custody.
@@ -128,6 +137,10 @@ impl EventDispatch {
         event
             .validate()
             .map_err(|error| Error::configuration("event", error.to_string()))?;
+        #[cfg(feature = "event-publication-zenoh")]
+        if let Some(native) = &self.native_publication {
+            return native.publish(event, options, &self.inner.config).await;
+        }
         self.inner.binding.publish_event(event, options).await
     }
 

@@ -5,13 +5,21 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(feature = "service-transport")]
+mod native;
+#[cfg(feature = "service-transport")]
+pub use native::*;
 use std::{collections::BTreeMap, fmt, str::FromStr};
 
 mod declaration;
+#[cfg(feature = "service-transport")]
+mod enrollment;
 mod event;
 mod import;
 mod manifest;
 mod schedule;
+#[cfg(feature = "service-transport")]
+pub use enrollment::*;
 
 pub use declaration::*;
 pub use event::*;

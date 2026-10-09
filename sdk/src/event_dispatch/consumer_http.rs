@@ -15,7 +15,7 @@ use kish_lingshu_event_dispatch_contract::{
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::{ConsumerError, ConsumerHttpAdmission, ConsumerRegistry, EventContext};
+use super::{ConsumerError, ConsumerHttpAdmission, ConsumerRegistry};
 
 #[derive(Debug, Clone)]
 pub struct ConsumerHttpConfig {
@@ -95,7 +95,7 @@ async fn consume_event(
     if let Err(error) = validate_invocation(&registry, &headers, &invocation) {
         return error;
     }
-    let Some(consumer) = registry.find(&invocation) else {
+    let Some(_consumer) = registry.find(&invocation) else {
         return protocol_error(
             StatusCode::NOT_FOUND,
             "event_consumer_not_registered",
@@ -106,7 +106,6 @@ async fn consume_event(
         Ok(timeout) if !timeout.is_zero() => timeout,
         _ => return deadline_exceeded(),
     };
-    let context = EventContext::from_invocation(&invocation);
     let mut admission = match &state.admission {
         Some(admission) => match admission.acquire(invocation.consumption.group_key.as_deref()) {
             Ok(guard) => Some(guard),
@@ -118,11 +117,16 @@ async fn consume_event(
         _ = async { admission.as_mut().expect("guarded admission").stopped().await }, if admission.is_some() => {
             return consume_error_response(ConsumerError::retryable("event_not_ready", "Event membership ended"));
         },
-        result = tokio::time::timeout(timeout, consumer.consume(context, invocation.event.payload)) => result,
+        result = tokio::time::timeout(timeout, super::consumer_execution::execute_sync(registry, invocation)) => result,
     };
     match result {
         Ok(Ok(result)) => Json(json!({ "result": result })).into_response(),
-        Ok(Err(error)) => consume_error_response(error),
+        Ok(Err(super::consumer_execution::ConsumerExecutionError::Handler(error))) => {
+            consume_error_response(error)
+        }
+        Ok(Err(super::consumer_execution::ConsumerExecutionError::DeadlineExceeded)) => {
+            deadline_exceeded()
+        }
         Err(_) => deadline_exceeded(),
     }
 }

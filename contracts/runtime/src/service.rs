@@ -3,7 +3,9 @@
 //! Call identity is correlation data, not a request to persist a call ledger.
 use std::collections::BTreeSet;
 
-pub use kish_lingshu_foundation_contract::{ServiceInstanceIdentity, ServiceInstanceRegistration};
+pub use kish_lingshu_foundation_contract::{
+    ServiceInstanceIdentity, ServiceInstanceRegistration, ServiceInstanceTransport,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -18,6 +20,22 @@ mod admission;
 pub use admission::*;
 mod heartbeat;
 pub use heartbeat::*;
+#[cfg(feature = "service-transport")]
+mod enrollment;
+#[cfg(feature = "service-transport")]
+pub use enrollment::*;
+#[cfg(feature = "service-transport")]
+mod native_call;
+#[cfg(feature = "service-transport")]
+mod native_report;
+#[cfg(feature = "service-transport")]
+mod route;
+#[cfg(feature = "service-transport")]
+pub use native_call::*;
+#[cfg(feature = "service-transport")]
+pub use native_report::*;
+#[cfg(feature = "service-transport")]
+pub use route::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

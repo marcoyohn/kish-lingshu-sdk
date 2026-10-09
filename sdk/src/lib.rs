@@ -13,21 +13,23 @@ mod client;
 mod config;
 mod error;
 mod request;
-#[cfg(feature = "service-auth")]
+#[cfg(feature = "service-auth-core")]
 mod service_budget;
 
 pub mod assets;
 pub mod event_dispatch;
-#[cfg(feature = "service-auth")]
+#[cfg(feature = "service-auth-core")]
 pub mod service_auth;
+#[cfg(feature = "service-channel")]
+pub mod service_channel;
 #[cfg(feature = "service-manifest")]
 pub mod services;
 pub mod user_task;
 pub mod workflow;
 pub mod workspaces;
-#[cfg(feature = "service-auth")]
+#[cfg(feature = "service-auth-core")]
 pub use service_auth::{ServiceAuthError, ServiceConnection};
-#[cfg(feature = "service-auth")]
+#[cfg(feature = "service-auth-core")]
 pub use service_budget::ServiceExecutionBudget;
 
 pub use auth::{

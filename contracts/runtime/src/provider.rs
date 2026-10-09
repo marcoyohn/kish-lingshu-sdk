@@ -13,6 +13,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_PROVIDER_CATALOG_BYTES: usize = 4 * 1024 * 1024;
 
+#[cfg(feature = "service-transport")]
+mod enrollment;
+#[cfg(feature = "service-transport")]
+pub use enrollment::*;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderWorkflow {
@@ -104,6 +109,56 @@ pub struct ProviderInstance {
     pub enrollment: ProviderEnrollment,
     pub generation: String,
     pub lease_expires_at_ms: i64,
+}
+
+/// Public discovery projection. A current registration or recent route proof
+/// describes the source only; neither grants Service/Event execution readiness.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderDiscoveryInstance {
+    pub enrollment: ProviderDiscoverySource,
+    pub generation: String,
+    pub lease_expires_at_ms: i64,
+    pub transport: kish_lingshu_foundation_contract::ServiceInstanceTransport,
+    pub connectivity: ProviderConnectivity,
+    pub role_readiness: ProviderRoleReadiness,
+    pub observed_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderDiscoverySource {
+    pub provider_key: String,
+    pub release: String,
+    pub catalog_digest: String,
+    pub instance: ProviderDiscoveryIdentity,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalog_url: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderDiscoveryIdentity {
+    pub instance_id: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderConnectivity {
+    /// An HTTP callback is configured but was not probed by discovery.
+    NotObserved,
+    /// Finite authoritative route proof observed now; not live socket health.
+    RecentlyConfirmed,
+    /// No current authoritative native route confirmation.
+    Unconfirmed,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderRoleReadiness {
+    HttpCallbackConfigured,
+    /// Reader configured and a recent exact route proof exists. The subsequent
+    /// read must still check authority, signature, identity, digest and deadline.
+    NativeReadConfigured,
+    NativeRouteUnconfirmed,
+    NativeReaderDisabled,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

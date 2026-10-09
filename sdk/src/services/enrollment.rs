@@ -3,18 +3,6 @@ use crate::{ServiceAuthError, ServiceConnection};
 use std::{sync::Arc, time::Duration};
 use tokio::{sync::watch, task::JoinHandle, time::Instant};
 
-#[derive(Debug, Clone)]
-pub enum ServiceEnrollmentStatus {
-    Ready {
-        node_id: String,
-        generation: String,
-        lease_expires_at_ms: i64,
-    },
-    /// Discovery is unavailable; accepted calls retain their own finite authority.
-    Unavailable,
-    Stopped,
-}
-
 pub struct EnrolledService {
     cancel: watch::Sender<bool>,
     status: watch::Receiver<ServiceEnrollmentStatus>,

@@ -3,6 +3,8 @@
 //! Domain ports remain in their owning contracts. This crate contains only
 //! identities and receipts needed on both sides of those contract boundaries.
 
+pub mod trace;
+
 use std::{
     fmt::{self, Display, Formatter},
     str::FromStr,
@@ -16,6 +18,8 @@ use thiserror::Error;
 pub mod instance_heartbeat;
 #[cfg(feature = "service-auth")]
 pub mod service_auth;
+#[cfg(feature = "service-transport")]
+pub mod service_transport;
 
 /// A stable deployment instance and one SDK connection incarnation. This is
 /// registration metadata, never a credential or a business idempotency key.
@@ -33,6 +37,15 @@ pub struct ServiceInstanceRegistration {
 pub struct ServiceInstanceIdentity {
     pub instance_id: String,
     pub generation: String,
+}
+
+/// Business transport chosen for one common instance incarnation. Channel
+/// bootstrap is deliberately independent and cannot select a business role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceInstanceTransport {
+    Http,
+    Zenoh,
 }
 
 macro_rules! string_identity {
