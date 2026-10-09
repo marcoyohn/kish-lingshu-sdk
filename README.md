@@ -55,6 +55,15 @@ Local Workspace/Sandbox execution, permission journals and CLI presentation belo
 to the source product and are not part of the public SDK export.
 
 
+### v0.4.1
+
+Fixes initial native Provider/Call/Consumer registration when the platform clock
+is slightly ahead of the client. Registration uses the authenticated reply's
+issuance time and the existing 5-second future-clock tolerance, while preserving
+the 30-second lease limit, monotonic request-time budget and physical authorization
+cap. No API, wire, database or ZenSS Host/Build Kit upgrade is required from
+SDK v0.4.0; the matching Host/Build Kit remains v0.5.0.
+
 ## Outbound Zenoh application (candidate, opt-in)
 
 The Client SDK uses official crates.io Zenoh **1.10.1**, TCP/TLS only. It requires
@@ -188,7 +197,8 @@ macOS kernel-window behavior has not been accepted by the Linux measurements.
 
 ## Explicit intranet plaintext (0.3.0)
 
-A matching ZenSS 0.4.0 Host/Build Kit and enabled product profile are required.
+For SDK v0.4.x, a matching ZenSS v0.5.0 Host/Build Kit and enabled product
+profile are required.
 Add `service-plaintext` to the application's native features and call
 `bootstrap_channel_with_transport(instance, expected_deployment,
 ChannelTransport::IntranetPlaintext)`. The enum is exported from

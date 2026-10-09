@@ -41,6 +41,11 @@ type RoleQuery = (
     Option<tokio::sync::OwnedSemaphorePermit>,
 );
 
+struct VerifiedRoleControlReply {
+    envelope: TransportEnvelope,
+    issued_at_unix_ms: i64,
+}
+
 fn reserved_control_kind(bytes: &[u8], limit: usize) -> bool {
     if bytes.len() > limit {
         return false;
@@ -637,6 +642,16 @@ impl ServiceChannelSessions {
         kind: MessageKind,
         value: &T,
     ) -> Result<TransportEnvelope, ChannelSessionError> {
+        self.verified_role_control(kind, value)
+            .await
+            .map(|reply| reply.envelope)
+    }
+
+    async fn verified_role_control<T: serde::Serialize>(
+        &self,
+        kind: MessageKind,
+        value: &T,
+    ) -> Result<VerifiedRoleControlReply, ChannelSessionError> {
         super::trace::scope(None, self.role_control_scoped(kind, value)).await
     }
 
@@ -644,7 +659,7 @@ impl ServiceChannelSessions {
         &self,
         kind: MessageKind,
         value: &T,
-    ) -> Result<TransportEnvelope, ChannelSessionError> {
+    ) -> Result<VerifiedRoleControlReply, ChannelSessionError> {
         self.active_role_channel()?;
         let initial = self.identity.bootstrap_response();
         let target = initial
@@ -733,13 +748,17 @@ impl ServiceChannelSessions {
                 {
                     return Err(ChannelSessionError::InvalidResponse);
                 }
-                self.identity
+                let claims = self
+                    .identity
                     .connection
                     .verify_channel_message(&initial.transport_trust, &response)
                     .map_err(|_| ChannelSessionError::InvalidResponse)?;
                 #[cfg(test)]
                 super::trace::assert_verified_reply_trace(&response);
-                result = Some(response);
+                result = Some(VerifiedRoleControlReply {
+                    envelope: response,
+                    issued_at_unix_ms: claims.issued_at_unix_ms,
+                });
             }
             result.ok_or(ChannelSessionError::Transport)
         };
@@ -789,9 +808,12 @@ impl ServiceChannelSessions {
             return Err(ChannelSessionError::InvalidConfig);
         }
         let started = Instant::now();
-        let response = self.role_control(MessageKind::Register, &request).await?;
-        let response: ChannelRoleEnrollmentResponse = serde_json::from_str(response.payload.get())
-            .map_err(|_| ChannelSessionError::InvalidResponse)?;
+        let verified = self
+            .verified_role_control(MessageKind::Register, &request)
+            .await?;
+        let response: ChannelRoleEnrollmentResponse =
+            serde_json::from_str(verified.envelope.payload.get())
+                .map_err(|_| ChannelSessionError::InvalidResponse)?;
         let (endpoint, generation, expires) = validate_registration_response(&request, &response)?;
         let ServiceEndpoint::Zenoh { route, lanes, .. } = &endpoint else {
             return Err(ChannelSessionError::InvalidResponse);
@@ -808,11 +830,9 @@ impl ServiceChannelSessions {
             .validate()
             .map_err(|_| ChannelSessionError::InvalidResponse)?;
         let now = chrono::Utc::now().timestamp_millis();
-        if expires <= now
-            || expires > now + 31_000
-            || lanes
-                .iter()
-                .any(|lane| usize::from(lane.lane.index()) >= self.lane_count())
+        if lanes
+            .iter()
+            .any(|lane| usize::from(lane.lane.index()) >= self.lane_count())
             || lanes.len() != requested_lanes
             || lanes
                 .iter()
@@ -821,8 +841,13 @@ impl ServiceChannelSessions {
         {
             return Err(ChannelSessionError::InvalidResponse);
         }
-        let deadline = (started + Duration::from_millis((expires - now).min(30_000) as u64))
-            .min(self.authorization_deadline());
+        let deadline = initial_role_deadline(
+            expires,
+            verified.issued_at_unix_ms,
+            now,
+            started,
+            self.authorization_deadline(),
+        )?;
         let listener = self
             .install_role_declarations(
                 &endpoint,
@@ -1473,6 +1498,35 @@ fn validate_role_session_lanes(
     Ok(())
 }
 
+/// The reply issuance time has already passed signature, binding and nonce
+/// verification. Receipt latency and clock skew must not extend role authority.
+fn initial_role_deadline(
+    expires: i64,
+    issued: i64,
+    now: i64,
+    started: Instant,
+    physical_deadline: Instant,
+) -> Result<Instant, ChannelSessionError> {
+    use kish_lingshu_foundation_contract::service_transport::bootstrap::MAX_BOOTSTRAP_CLOCK_SKEW_MS;
+    let duration = expires
+        .checked_sub(issued)
+        .ok_or(ChannelSessionError::InvalidResponse)?;
+    if now < 0
+        || issued < 0
+        || issued > now.saturating_add(MAX_BOOTSTRAP_CLOCK_SKEW_MS)
+        || expires <= now
+        || !(1..=30_000).contains(&duration)
+    {
+        return Err(ChannelSessionError::InvalidResponse);
+    }
+    let remaining = duration.min(expires - now) as u64;
+    let deadline = (started + Duration::from_millis(remaining)).min(physical_deadline);
+    if deadline <= Instant::now() {
+        return Err(ChannelSessionError::AuthorityExpired);
+    }
+    Ok(deadline)
+}
+
 fn validate_adoption_response(
     response: &ChannelRoleAdoptionResponse,
     previous: &ServiceEndpoint,
@@ -1671,6 +1725,76 @@ fn validate_registration_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_role_lease_accepts_clock_offsets_without_extending_authority() {
+        let started = Instant::now();
+        let now = 100_000;
+        let cap = started + Duration::from_secs(60);
+        for offset in [-5_000, -2_271, 0, 2_271, 5_000] {
+            let issued = now + offset;
+            let expires = issued + 30_000;
+            let deadline = initial_role_deadline(expires, issued, now, started, cap).unwrap();
+            assert_eq!(
+                deadline,
+                started + Duration::from_millis((30_000 + offset).min(30_000) as u64),
+                "offset={offset}"
+            );
+        }
+        // A shorter lease remains short even when wall time suggests more life.
+        assert_eq!(
+            initial_role_deadline(now + 7_271, now + 2_271, now, started, cap).unwrap(),
+            started + Duration::from_secs(5)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_role_lease_rejects_invalid_signed_timing() {
+        let started = Instant::now();
+        let now = 100_000;
+        let cap = started + Duration::from_secs(60);
+        for (issued, expires) in [
+            (now + 5_001, now + 35_001),
+            (now, now + 30_001),
+            // Fits the former local 31s check, but signed duration is excessive.
+            (now - 2_271, now + 30_000),
+            (now - 30_000, now),
+            (now, now),
+            (now + 2_271, now + 2_270),
+            (-1, now + 1),
+            (i64::MIN, i64::MAX),
+        ] {
+            assert_eq!(
+                initial_role_deadline(expires, issued, now, started, cap),
+                Err(ChannelSessionError::InvalidResponse),
+                "issued={issued}, expires={expires}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_role_lease_keeps_request_start_and_physical_deadlines() {
+        let started = Instant::now();
+        let now = 100_000;
+        let cap = started + Duration::from_secs(60);
+        tokio::time::advance(Duration::from_secs(3)).await;
+        let deadline = initial_role_deadline(now + 32_271, now + 2_271, now, started, cap).unwrap();
+        assert_eq!(deadline - Instant::now(), Duration::from_secs(27));
+        let shorter_cap = started + Duration::from_secs(8);
+        assert_eq!(
+            initial_role_deadline(now + 32_271, now + 2_271, now, started, shorter_cap).unwrap(),
+            shorter_cap
+        );
+        assert_eq!(
+            initial_role_deadline(now + 32_271, now + 2_271, now, started, Instant::now()),
+            Err(ChannelSessionError::AuthorityExpired)
+        );
+        tokio::time::advance(Duration::from_secs(28)).await;
+        assert_eq!(
+            initial_role_deadline(now + 32_271, now + 2_271, now, started, cap),
+            Err(ChannelSessionError::AuthorityExpired)
+        );
+    }
 
     #[cfg(feature = "event-consumer-zenoh")]
     #[tokio::test]
