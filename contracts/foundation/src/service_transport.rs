@@ -7,6 +7,7 @@ use serde_json::value::RawValue;
 pub mod bootstrap;
 pub mod budget;
 pub mod channel;
+pub mod connection;
 pub mod enrollment;
 pub mod probe;
 
@@ -350,6 +351,7 @@ pub enum MessageKind {
     /// Product-internal direct Router report installation; never a Client grant.
     InstallCallReport,
     CatalogRead,
+    ConsumerRegistrationChanged,
     InvokeCall,
     CancelCall,
     CallHeartbeat,

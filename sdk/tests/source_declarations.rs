@@ -142,3 +142,45 @@ fn the_exported_consumer_descriptor_builds_the_invocation_registry() {
     let registry = builder.build().unwrap();
     assert_eq!(registry.app_id(), "orders-app");
 }
+
+#[test]
+fn registration_catalog_contains_only_bound_handlers_and_preserves_source_identity() {
+    use kish_lingshu_runtime_contract::provider::ProviderCatalog;
+    let source = SourceCatalog::collect().unwrap();
+    let manifest = source
+        .manifest(ProducerMetadata {
+            package_name: "orders-package".into(),
+            package_version: "1.0.0".into(),
+        })
+        .unwrap();
+    let catalog = ProviderCatalog {
+        format_version: 1,
+        application_id: "orders-app".into(),
+        provider_key: "orders-provider".into(),
+        release: "1.0.0".into(),
+        services: None,
+        events: Some(manifest),
+        workflows: vec![],
+    };
+    let empty = ConsumerRegistry::new("orders-app").unwrap();
+    assert!(empty
+        .registration_declarations(&catalog)
+        .unwrap()
+        .is_empty());
+    let mut builder = ConsumerRegistry::builder("orders-app").unwrap();
+    builder.bind(Arc::new(OrderHandlers)).unwrap();
+    let registry = builder.build().unwrap();
+    let declared = registry.registration_declarations(&catalog).unwrap();
+    assert_eq!(declared.len(), 1);
+    assert_eq!(declared[0].provider_key, "orders-provider");
+    assert_eq!(declared[0].producer.package_name, "orders-package");
+    assert_eq!(declared[0].consumer.key, "orders.on-created");
+    assert_eq!(declared[0].events.len(), 1);
+    assert_eq!(declared[0].events[0].key, "orders.created");
+    let mut foreign = catalog.clone();
+    foreign.application_id = "other".into();
+    assert!(registry.registration_declarations(&foreign).is_err());
+    let mut missing = catalog.clone();
+    missing.events = None;
+    assert!(registry.registration_declarations(&missing).is_err());
+}

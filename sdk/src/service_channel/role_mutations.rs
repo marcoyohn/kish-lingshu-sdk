@@ -55,12 +55,26 @@ impl RoleOwner {
         if self.roles.len() >= MAX_MANAGED_ROLES {
             return Err(ChannelSessionError::CapacityExceeded);
         }
+        #[cfg(feature = "event-consumer-zenoh")]
+        let declaration_version = match &mutation {
+            RoleMutation::DeclaredConsumer { version, .. } => Some(version.clone()),
+            _ => None,
+        };
+        #[cfg(feature = "service-call-zenoh")]
+        let call_version = match &mutation {
+            RoleMutation::Call { registration, .. } => registration.clone(),
+            _ => None,
+        };
         let logical_key = match &mutation {
             RoleMutation::Provider(catalog) => format!("provider:{}", catalog.provider_key),
             #[cfg(feature = "service-call-zenoh")]
             RoleMutation::Call { node_id, .. } => format!("call:{node_id}"),
             #[cfg(feature = "event-consumer-zenoh")]
             RoleMutation::Consumer { group_key, .. } => format!("consumer:{group_key}"),
+            #[cfg(feature = "event-consumer-zenoh")]
+            RoleMutation::DeclaredConsumer {
+                group_key, version, ..
+            } => format!("consumer:{group_key}:{}", version.registration_key),
             RoleMutation::Remove(_) => unreachable!(),
         };
         // Reject duplicates before native I/O, including retained expired roles.
@@ -73,6 +87,18 @@ impl RoleOwner {
             return Err(ChannelSessionError::InvalidConfig);
         }
         let mut role = match &mutation {
+            #[cfg(feature = "event-consumer-zenoh")]
+            RoleMutation::DeclaredConsumer {
+                version,
+                group_key,
+                node_id,
+                maximum_in_flight,
+                ..
+            } => {
+                self.pool
+                    .prepare_declared_consumer(version, group_key, node_id, *maximum_in_flight)
+                    .await?
+            }
             RoleMutation::Provider(catalog) => self.pool.register_provider_role(catalog).await?,
             #[cfg(feature = "service-call-zenoh")]
             RoleMutation::Call {
@@ -81,9 +107,20 @@ impl RoleOwner {
                 budget,
                 ..
             } => {
-                self.pool
-                    .register_service_role(node_id, budget.maximum_in_flight(), registry)
-                    .await?
+                if let Some(version) = &call_version {
+                    self.pool
+                        .prepare_declared_call(
+                            version,
+                            node_id,
+                            budget.maximum_in_flight(),
+                            registry,
+                        )
+                        .await?
+                } else {
+                    self.pool
+                        .register_service_role(node_id, budget.maximum_in_flight(), registry)
+                        .await?
+                }
             }
             #[cfg(feature = "event-consumer-zenoh")]
             RoleMutation::Consumer {
@@ -118,6 +155,9 @@ impl RoleOwner {
             #[cfg(feature = "event-consumer-zenoh")]
             RoleMutation::Consumer {
                 registry, budget, ..
+            }
+            | RoleMutation::DeclaredConsumer {
+                registry, budget, ..
             } => self.pool.enable_sync_consumers(&mut role, registry, budget),
             RoleMutation::Remove(_) => unreachable!(),
         };
@@ -139,6 +179,56 @@ impl RoleOwner {
         self.report.push(status.clone());
         self.roles.push(role);
         binding?;
+        #[cfg(feature = "service-call-zenoh")]
+        if let Some(version) = call_version {
+            self.pool
+                .acknowledge_declared_call(&version, &status.role_generation)
+                .await?;
+        }
+        #[cfg(feature = "event-consumer-zenoh")]
+        if let Some(version) = declaration_version {
+            use kish_lingshu_event_dispatch_contract::{
+                ConsumerRegistrationCommand, ConsumerRegistrationControl,
+                ConsumerRegistrationControlResponse, ConsumerRegistrationProtocol,
+            };
+            let confirmed = self
+                .pool
+                .registration_control(&ConsumerRegistrationControl {
+                    consumer_registration: ConsumerRegistrationProtocol::V1,
+                    command: ConsumerRegistrationCommand::Acknowledge {
+                        version: version.clone(),
+                        role_generation: status.role_generation.clone(),
+                    },
+                })
+                .await;
+            let confirmed = if matches!(confirmed, Err(ChannelSessionError::Transport)) {
+                let result = self
+                    .pool
+                    .registration_control(&ConsumerRegistrationControl {
+                        consumer_registration: ConsumerRegistrationProtocol::V1,
+                        command: ConsumerRegistrationCommand::Status {
+                            registration_key: version.registration_key.clone(),
+                        },
+                    })
+                    .await;
+                match result {
+                    Ok(ConsumerRegistrationControlResponse::Registered { ref receipt })
+                        if receipt.version == version && receipt.state == kish_lingshu_event_dispatch_contract::ConsumerActivationState::Active => result,
+                    _ => Err(ChannelSessionError::Transport),
+                }
+            } else {
+                confirmed
+            };
+            if !matches!(
+                confirmed,
+                Ok(ConsumerRegistrationControlResponse::Registered { .. })
+            ) {
+                self.roles.last().expect("owned role").request_stop();
+                return Err(confirmed
+                    .err()
+                    .unwrap_or(ChannelSessionError::ControlRejected));
+            }
+        }
         Ok(status)
     }
 }

@@ -52,6 +52,23 @@ pub(crate) struct InstanceRegistrationState {
     request: Option<kish_lingshu_foundation_contract::ServiceInstanceRegistration>,
 }
 impl InstanceRegistrationState {
+    #[cfg(feature = "service-zenoh")]
+    fn prepare_native_rebootstrap(
+        &mut self,
+    ) -> Result<kish_lingshu_foundation_contract::ServiceInstanceRegistration, ServiceAuthError>
+    {
+        let request = self
+            .request
+            .as_mut()
+            .ok_or(ServiceAuthError::InvalidNodeConfig)?;
+        // Keep the same new incarnation if its bootstrap response was lost.
+        // A completed generation is retired only by this explicit recovery path.
+        if request.generation.take().is_some() {
+            request.incarnation_id = uuid::Uuid::new_v4().to_string();
+        }
+        Ok(request.clone())
+    }
+
     #[cfg(feature = "service-channel")]
     pub(crate) fn bind(
         &mut self,
@@ -118,6 +135,15 @@ impl InstanceRegistrationState {
     }
 }
 
+#[cfg(feature = "service-zenoh")]
+pub(crate) struct NativeRuntimePermit(Arc<std::sync::atomic::AtomicBool>);
+#[cfg(feature = "service-zenoh")]
+impl Drop for NativeRuntimePermit {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
 struct Shared {
     client: Client,
     base: Url,
@@ -129,6 +155,8 @@ struct Shared {
     closed: watch::Sender<Option<ServiceAuthError>>,
     #[cfg(feature = "service-zenoh")]
     channel_sessions: Arc<tokio::sync::Semaphore>,
+    #[cfg(feature = "service-zenoh")]
+    native_runtime: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(feature = "service-zenoh")]
     catalog_snapshots: Arc<tokio::sync::Semaphore>,
     #[cfg(feature = "service-zenoh")]
@@ -241,6 +269,8 @@ impl ServiceConnection {
                 kish_lingshu_foundation_contract::service_transport::MAX_DATA_LANES,
             )),
             #[cfg(feature = "service-zenoh")]
+            native_runtime: Arc::default(),
+            #[cfg(feature = "service-zenoh")]
             catalog_snapshots: Arc::new(tokio::sync::Semaphore::new(8 * 1024 * 1024)),
             #[cfg(feature = "service-zenoh")]
             catalog_replies: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -255,6 +285,65 @@ impl ServiceConnection {
             refresh: Mutex::new(Some(refresh)),
             heartbeat: Mutex::new(Some(heartbeat)),
         })))
+    }
+
+    #[cfg(feature = "service-zenoh")]
+    pub(crate) fn claim_native_runtime(&self) -> Result<NativeRuntimePermit, ServiceAuthError> {
+        self.ensure_open()?;
+        let claimed = self.0.shared.native_runtime.clone();
+        claimed
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .map_err(|_| ServiceAuthError::InvalidNodeConfig)?;
+        let permit = NativeRuntimePermit(claimed);
+        if self.channel_session_budget().available_permits()
+            != kish_lingshu_foundation_contract::service_transport::MAX_DATA_LANES
+            || !self.0.shared.heartbeats.is_empty()
+        {
+            return Err(ServiceAuthError::InvalidNodeConfig);
+        }
+        Ok(permit)
+    }
+
+    /// Rebuild logical native authority after the old managed channel has been
+    /// closed and joined. No business request is replayed. Root revocation stays
+    /// terminal; a lost bootstrap result retains the same replacement incarnation.
+    #[cfg(feature = "service-zenoh")]
+    pub async fn rebootstrap_channel_after_close(
+        &self,
+        expected_deployment: Option<
+            kish_lingshu_foundation_contract::service_transport::RouteIdentity,
+        >,
+        transport: crate::service_channel::ChannelTransport,
+    ) -> Result<crate::service_channel::ServiceChannelIdentity, ServiceAuthError> {
+        self.ensure_open()?;
+        let all_sessions = self
+            .channel_session_budget()
+            .try_acquire_many_owned(
+                kish_lingshu_foundation_contract::service_transport::MAX_DATA_LANES as u32,
+            )
+            .map_err(|_| ServiceAuthError::InvalidNodeConfig)?;
+        if !self.0.shared.heartbeats.is_empty() {
+            return Err(ServiceAuthError::InvalidNodeConfig);
+        }
+        #[cfg(feature = "service-call-zenoh")]
+        let _reports = self
+            .0
+            .shared
+            .call_reports
+            .clone()
+            .try_acquire_many_owned(16)
+            .map_err(|_| ServiceAuthError::InvalidNodeConfig)?;
+        let request = self.registration().await.prepare_native_rebootstrap()?;
+        let identity = self
+            .bootstrap_channel_with_transport(request, expected_deployment, transport)
+            .await;
+        drop(all_sessions);
+        identity
     }
 
     /// A ServiceConnection represents one provider instance; every role shares
@@ -638,5 +727,38 @@ async fn refresh_trust(shared: Arc<Shared>) {
             // refresh is one bounded request; this is not publication recovery.
             Err(_) => {}
         }
+    }
+}
+
+#[cfg(all(test, feature = "service-zenoh"))]
+mod native_rebootstrap_tests {
+    use super::*;
+    #[test]
+    fn explicit_rebootstrap_preserves_instance_and_reuses_uncertain_incarnation() {
+        let mut state = InstanceRegistrationState {
+            request: Some(
+                kish_lingshu_foundation_contract::ServiceInstanceRegistration {
+                    instance_id: "stable-instance".into(),
+                    incarnation_id: "old-boot".into(),
+                    generation: Some("old-generation".into()),
+                },
+            ),
+        };
+        let replacement = state.prepare_native_rebootstrap().unwrap();
+        assert_eq!(replacement.instance_id, "stable-instance");
+        assert_ne!(replacement.incarnation_id, "old-boot");
+        assert!(replacement.generation.is_none());
+        assert_eq!(state.prepare_native_rebootstrap().unwrap(), replacement);
+        state
+            .accept(Some(
+                &kish_lingshu_foundation_contract::ServiceInstanceIdentity {
+                    instance_id: replacement.instance_id.clone(),
+                    generation: "new-generation".into(),
+                },
+            ))
+            .unwrap();
+        let next = state.prepare_native_rebootstrap().unwrap();
+        assert_ne!(next.incarnation_id, replacement.incarnation_id);
+        assert!(next.generation.is_none());
     }
 }

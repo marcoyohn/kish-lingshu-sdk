@@ -245,6 +245,15 @@ async fn native_accepted_call_survives_role_expiry_and_inflight_certificate_hand
     }
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "matched connected Host and real Workflow; acceptance --connected-async-rotation-test"]
+async fn native_connected_accepted_call_reports_across_managed_certificate_rotation() {
+    assert_eq!(
+        std::env::var("LINGSHU_CONNECTED_LIFECYCLE_TEST").as_deref(),
+        Ok("true")
+    );
+    native_workflow(CallMode::Async, None, Some(CallLifecycle::ManagedRotation)).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "licensed host; run acceptance --full-pool-rotation-test"]
 async fn native_full_pool_defers_rotation_until_original_accepted_report_finishes() {
     assert!(super::super::ChannelSessionConfig::host_test().session_count() > 2);
@@ -357,6 +366,16 @@ async fn native_workflow_with_parallel(
         .open_sessions(super::super::ChannelSessionConfig::host_test())
         .await
         .unwrap();
+    if std::env::var("LINGSHU_CONNECTED_LIFECYCLE_TEST").as_deref() == Ok("true") {
+        pool.activate_connection_authority(
+            kish_lingshu_foundation_contract::service_transport::RouteIdentity::new(
+                "workflow-connection",
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    }
     if std::env::var_os("LINGSHU_VERIFY_REPORT_INSTALL_ISOLATION").is_some() {
         let key = format!(
             "{}/report-install",
@@ -664,13 +683,22 @@ async fn native_workflow_with_parallel(
         .unwrap();
     let mut retired = None;
     if let Some(lifecycle) = lifecycle {
-        tokio::time::timeout(Duration::from_secs(5), async {
+        if tokio::time::timeout(Duration::from_secs(5), async {
             while executions.load(Ordering::SeqCst) == 0 {
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .unwrap();
+        .is_err()
+        {
+            let result = run
+                .wait(
+                    RequestOptions::new()
+                        .with_deadline(chrono::Utc::now() + chrono::Duration::seconds(2)),
+                )
+                .await;
+            panic!("original Handler was never admitted: {result:?}");
+        }
         assert_eq!(execution.core.active.load(Ordering::SeqCst), 1);
         if lifecycle == CallLifecycle::WriterRestart {
             let markers = std::path::PathBuf::from(

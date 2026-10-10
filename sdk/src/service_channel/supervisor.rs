@@ -126,6 +126,9 @@ pub(super) trait AuthorizationOwner {
     fn replacing_pool(&self) -> Option<Arc<AtomicBool>> {
         None
     }
+    fn refresh_deadline(&self, after: Instant) -> Option<Instant> {
+        Some(after + OBSERVATION_INTERVAL)
+    }
     fn notification_deadline(&self) -> Option<Instant> {
         None
     }
@@ -146,6 +149,11 @@ pub(super) trait AuthorizationOwner {
     ) -> impl std::future::Future<Output = Result<(), ChannelSessionError>> + Send;
 }
 impl AuthorizationOwner for ServiceChannelSessions {
+    fn refresh_deadline(&self, after: Instant) -> Option<Instant> {
+        self.connection_authority
+            .is_none()
+            .then_some(after + OBSERVATION_INTERVAL)
+    }
     fn deadline(&self) -> Instant {
         self.authorization_deadline()
     }
@@ -184,10 +192,11 @@ async fn observe(
     status: watch::Sender<ChannelSupervisorStatus>,
 ) -> Result<(), ChannelSessionError> {
     let mut closed = owner.closed();
-    let mut next_observation = Instant::now() + OBSERVATION_INTERVAL;
+    let mut last_observation = Instant::now();
     let mut observations = 0u64;
     let reason = loop {
         let notification = owner.notification_deadline();
+        let next_observation = owner.refresh_deadline(last_observation);
         // Expiry/close has priority over a timer or a late successful response.
         let deadline = owner.deadline();
         let mutation = tokio::select! {
@@ -201,7 +210,12 @@ async fn observe(
                     None => std::future::pending().await,
                 }
             } => { owner.notify(); continue; },
-            _ = tokio::time::sleep_until(next_observation) => false,
+            _ = async {
+                match next_observation {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            } => false,
             _ = owner.changed() => true,
         };
         let deadline = owner.deadline();
@@ -245,7 +259,7 @@ async fn observe(
         // Start a new delay after completion: even a query spanning scheduler
         // suspension cannot be followed by an immediate failure retry or burst.
         if !mutation {
-            next_observation = Instant::now() + OBSERVATION_INTERVAL;
+            last_observation = Instant::now();
         }
     };
     status.send_replace(ChannelSupervisorStatus::Stopping { reason });

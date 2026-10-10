@@ -193,7 +193,7 @@ async fn setup(
         .await
         .unwrap();
     assert!(listener.connectivity_gate.confirm(0));
-    let role=RegisteredChannelRole {response:ChannelRoleEnrollmentResponse::Call(ServiceEnrollmentResponseV2{enrollment_version:kish_lingshu_foundation_contract::service_transport::enrollment::EnrollmentVersion::V2,session:ServiceSession{instance:Some(initial.instance.clone()),node_id:"node".into(),generation:"generation".into(),credential:"fixture-only".into(),lease_expires_at_ms:expires,heartbeat_interval_ms:10000},endpoint:ep.clone()}),logical_key:"call:node".into(),catalog:None,endpoint:ep.clone(),stop:listener.stop,draining_handoff:listener.draining_handoff,task:Some(listener.task),role_deadline:deadline,connectivity_gate:listener.connectivity_gate,alive:listener.alive,cleanup_failed:false,channel:ClientChannelIdentity{application_id:initial.application_id.clone(),instance_id:RouteIdentity::new("sdk").unwrap(),base_generation:RouteIdentity::new("base").unwrap(),certificate_identity:initial.certificate.certificate_identity.clone()},remote_deregistered:false,lease_window:listener.lease_window,calls:listener.calls,call_contract:Some((f.core.registry.capabilities(),capacity)),
+    let role=RegisteredChannelRole {call_registration:None,consumer_registration:None,response:ChannelRoleEnrollmentResponse::Call(ServiceEnrollmentResponseV2{enrollment_version:kish_lingshu_foundation_contract::service_transport::enrollment::EnrollmentVersion::V2,session:ServiceSession{instance:Some(initial.instance.clone()),node_id:"node".into(),generation:"generation".into(),credential:"fixture-only".into(),lease_expires_at_ms:expires,heartbeat_interval_ms:10000},endpoint:ep.clone()}),logical_key:"call:node".into(),catalog:None,endpoint:ep.clone(),stop:listener.stop,draining_handoff:listener.draining_handoff,task:Some(listener.task),role_deadline:deadline,connectivity_gate:listener.connectivity_gate,alive:listener.alive,cleanup_failed:false,channel:ClientChannelIdentity{application_id:initial.application_id.clone(),instance_id:RouteIdentity::new("sdk").unwrap(),base_generation:RouteIdentity::new("base").unwrap(),certificate_identity:initial.certificate.certificate_identity.clone()},remote_deregistered:false,lease_window:listener.lease_window,calls:listener.calls,call_contract:Some((f.core.registry.capabilities(),capacity)),
         #[cfg(feature="event-consumer-zenoh")] consumers:listener.consumers,
         #[cfg(feature="event-consumer-zenoh")] consumer_capacity:None,
     };
@@ -511,6 +511,37 @@ async fn async_role_pins_each_reporter_and_retains_capacity_until_same_result_ac
     for worker in workers {
         worker.await.unwrap();
     }
+    role.close().await.unwrap();
+    pool.close().await.unwrap();
+    router.close().await.unwrap();
+    f.core.connection.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelled_route_refresh_preserves_only_the_previous_finite_proof() {
+    let (f, _, _, _, _, mut pool, mut role, router) = setup(1).await;
+    let original_deadline = role.role_deadline;
+    assert!(role.route_confirmed());
+    // This fixture has no platform control responder. A failed or cancelled
+    // refresh must neither withdraw a live proof nor manufacture a new deadline.
+    let _ = tokio::time::timeout(
+        Duration::from_millis(30),
+        pool.confirm_role_route(&mut role),
+    )
+    .await;
+    assert!(role.route_confirmed());
+    assert_eq!(role.role_deadline, original_deadline);
+    role.role_deadline = Instant::now();
+    assert!(!role.route_confirmed());
+    let _ = tokio::time::timeout(
+        Duration::from_millis(30),
+        pool.confirm_role_route(&mut role),
+    )
+    .await;
+    assert!(
+        !role.route_confirmed(),
+        "failed refresh must not revive expired proof"
+    );
     role.close().await.unwrap();
     pool.close().await.unwrap();
     router.close().await.unwrap();

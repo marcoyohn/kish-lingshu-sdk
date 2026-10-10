@@ -137,6 +137,11 @@ pub enum ChannelRoleEnrollmentResponse {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelRoleRouteConfirmation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_registration_version: Option<super::CallActivationVersion>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_version:
+        Option<kish_lingshu_event_dispatch_contract::ConsumerActivationVersion>,
     pub role_generation: String,
     pub route_revision: u64,
 }

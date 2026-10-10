@@ -8,6 +8,10 @@ pub const MAX_CHANNEL_CONTROL_BYTES: usize = 32 * 1024;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChannelAuthorization {
+    /// Present only after every physical lane was authenticated and the native
+    /// owner installed connection-bound grants. Absence retains finite leases.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<super::connection::ConnectionAttestation>,
     pub application_id: RouteIdentity,
     pub instance: ServiceInstanceIdentity,
     pub certificate_identity: RouteIdentity,
@@ -38,13 +42,24 @@ impl ChannelAuthorization {
         {
             return Err(TransportContractError::InvalidIdentity);
         }
+        let maximum = if let Some(connection) = &self.connection {
+            connection.validate(now)?;
+            if !connection.complete()
+                || connection.expires_unix_ms < self.authorization_expires_unix_ms
+            {
+                return Err(TransportContractError::InvalidIdentity);
+            }
+            CHANNEL_CERTIFICATE_MS
+        } else {
+            CHANNEL_AUTHORIZATION_MS
+        };
         let duration = self
             .authorization_expires_unix_ms
             .checked_sub(self.authorization_issued_unix_ms)
             .ok_or(TransportContractError::Expired)?;
         if self.authorization_issued_unix_ms < 0
             || self.authorization_issued_unix_ms > now.saturating_add(MAX_BOOTSTRAP_CLOCK_SKEW_MS)
-            || !(1..=CHANNEL_AUTHORIZATION_MS).contains(&duration)
+            || !(1..=maximum).contains(&duration)
             || self.authorization_expires_unix_ms <= now
             || self.authorization_expires_unix_ms > initial.certificate.expires_unix_ms
         {

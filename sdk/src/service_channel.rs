@@ -33,6 +33,8 @@ pub use call_report::NativeCallReportClient;
 #[cfg(feature = "service-zenoh")]
 mod catalog;
 #[cfg(feature = "service-zenoh")]
+mod connection_registration;
+#[cfg(feature = "service-zenoh")]
 mod connectivity;
 #[cfg(feature = "service-zenoh")]
 mod observation;
@@ -41,10 +43,28 @@ pub use connectivity::ChannelConnectivityStatus;
 #[cfg(feature = "service-zenoh")]
 mod activation;
 #[cfg(feature = "service-zenoh")]
+mod registered_calls;
+#[cfg(feature = "event-consumer-zenoh")]
+mod registered_consumers;
+#[cfg(feature = "service-zenoh")]
+mod registration;
+#[cfg(feature = "service-call-zenoh")]
+pub use registered_calls::{RegisteredCallPlan, RegisteredCallUpdates};
+#[cfg(feature = "event-consumer-zenoh")]
+pub use registered_consumers::{
+    RegisteredConsumerBinding, RegisteredConsumerPlan, RegisteredConsumerUpdates,
+};
+#[cfg(feature = "service-zenoh")]
 mod role_changes;
+#[cfg(feature = "service-zenoh")]
+mod runtime;
 #[cfg(feature = "service-zenoh")]
 pub use activation::{
     CapabilityActivationState, CapabilityActivationStatus, CatalogActivation, CatalogActivationPlan,
+};
+#[cfg(feature = "service-zenoh")]
+pub use runtime::{
+    ManagedRegisteredService, NativeRuntimeError, NativeRuntimeStatus, RegisteredServiceRuntime,
 };
 #[cfg(feature = "service-zenoh")]
 mod role_supervisor;
@@ -698,6 +718,8 @@ mod tests {
             role_generation: route.role_generation.as_str().into(),
         };
         let confirmation = ChannelRoleRouteConfirmation {
+            call_registration_version: None,
+            registration_version: None,
             role_generation: request.role_generation.clone(),
             route_revision: *route_revision,
         };

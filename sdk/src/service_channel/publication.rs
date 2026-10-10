@@ -129,6 +129,20 @@ impl EventDispatch {
         Ok(self)
     }
 }
+impl EventDispatch {
+    /// Follow the logical native owner across complete instance replacement.
+    /// Each send retains its original physical client; no send is replayed by recovery.
+    pub fn with_registered_service(
+        mut self,
+        runtime: &super::ManagedRegisteredService,
+    ) -> Result<Self, ChannelSessionError> {
+        if self.inner.application_id.as_deref() != Some(runtime.publication.app_id.as_str()) {
+            return Err(ChannelSessionError::InvalidConfig);
+        }
+        self.native_publication = Some(runtime.publication.clone());
+        Ok(self)
+    }
+}
 impl NativePublicationClient {
     fn available(&self) -> bool {
         self.connection.ensure_open().is_ok()

@@ -17,6 +17,7 @@ mod enrollment;
 mod event;
 mod import;
 mod manifest;
+mod registration;
 mod schedule;
 #[cfg(feature = "service-transport")]
 pub use enrollment::*;
@@ -25,6 +26,7 @@ pub use declaration::*;
 pub use event::*;
 pub use import::*;
 pub use manifest::*;
+pub use registration::*;
 pub use schedule::*;
 
 pub const INVOCATION_CONTRACT_VERSION: &str = "1.0";
@@ -339,3 +341,6 @@ mod tests {
         );
     }
 }
+
+mod registration_control;
+pub use registration_control::*;

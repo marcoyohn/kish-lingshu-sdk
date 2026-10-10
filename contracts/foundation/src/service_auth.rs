@@ -284,6 +284,18 @@ impl ServiceSigner {
         now: i64,
         expires_at: i64,
     ) -> Result<String, ServiceAuthError> {
+        self.sign_bounded(app, purpose, claims, now, expires_at, MAX_PROOF_BYTES)
+    }
+
+    fn sign_bounded<T: Serialize>(
+        &self,
+        app: &str,
+        purpose: &str,
+        claims: &T,
+        now: i64,
+        expires_at: i64,
+        maximum: usize,
+    ) -> Result<String, ServiceAuthError> {
         let epoch = now / EPOCH_SECONDS;
         let key = self.key(app, epoch, purpose)?;
         let body = serde_json::to_vec(&Envelope {
@@ -302,7 +314,7 @@ impl ServiceSigner {
             encoded,
             URL_SAFE_NO_PAD.encode(key.sign(encoded.as_bytes()).as_ref())
         );
-        if result.len() > MAX_PROOF_BYTES {
+        if result.len() > maximum {
             return Err(ServiceAuthError);
         }
         Ok(result)
@@ -426,6 +438,44 @@ impl ServiceSigner {
         Ok((envelope.app_id, envelope.claims))
     }
 
+    /// Platform-only directory pages have a distinct signature purpose and
+    /// byte budget. This does not enlarge client credentials or message proofs.
+    pub fn sign_consumer_directory<T: Serialize>(
+        &self,
+        claims: &T,
+        now: i64,
+    ) -> Result<String, ServiceAuthError> {
+        self.sign_bounded(
+            "platform-directory",
+            "consumer-directory",
+            claims,
+            now,
+            now + 3,
+            2 * 1024 * 1024 - 2,
+        )
+    }
+    pub fn verify_consumer_directory<T: DeserializeOwned>(
+        &self,
+        proof: &str,
+        now: i64,
+    ) -> Result<T, ServiceAuthError> {
+        let (encoded, signature, envelope): (_, _, Envelope<T>) =
+            decode_bounded(proof, 2 * 1024 * 1024 - 2)?;
+        validate_envelope(&envelope, "consumer-directory", now, 3)?;
+        let epoch = envelope
+            .key_id
+            .parse::<i64>()
+            .map_err(|_| ServiceAuthError)?;
+        if epoch != envelope.issued_at / EPOCH_SECONDS || envelope.app_id != "platform-directory" {
+            return Err(ServiceAuthError);
+        }
+        let key = self.key(&envelope.app_id, epoch, "consumer-directory")?;
+        signature::UnparsedPublicKey::new(&signature::ED25519, key.public_key().as_ref())
+            .verify(encoded.as_bytes(), &signature)
+            .map_err(|_| ServiceAuthError)?;
+        Ok(envelope.claims)
+    }
+
     pub fn sign_session<T: Serialize>(
         &self,
         app: &str,
@@ -466,7 +516,13 @@ fn body_digest(body: &[u8]) -> String {
 fn decode<T: DeserializeOwned>(
     proof: &str,
 ) -> Result<(&str, Vec<u8>, Envelope<T>), ServiceAuthError> {
-    if proof.len() > MAX_PROOF_BYTES {
+    decode_bounded(proof, MAX_PROOF_BYTES)
+}
+fn decode_bounded<T: DeserializeOwned>(
+    proof: &str,
+    maximum: usize,
+) -> Result<(&str, Vec<u8>, Envelope<T>), ServiceAuthError> {
+    if proof.len() > maximum {
         return Err(ServiceAuthError);
     }
     let (encoded, sig) = proof.split_once('.').ok_or(ServiceAuthError)?;
@@ -1238,6 +1294,35 @@ mod tests {
             .verify_consumer_presence::<u64>(&session, 1001)
             .is_err());
     }
+    #[test]
+    fn directory_pages_have_separate_purpose_and_bounded_large_proofs() {
+        let signer = ServiceSigner::new(&[7; 32]).unwrap();
+        let data = "x".repeat(40 * 1024);
+        assert!(signer.sign_consumer_presence("app", &data, 1000).is_err());
+        let proof = signer.sign_consumer_directory(&data, 1000).unwrap();
+        assert_eq!(
+            signer
+                .verify_consumer_directory::<String>(&proof, 1001)
+                .unwrap(),
+            data
+        );
+        assert!(signer
+            .verify_consumer_directory::<String>(&proof, 1003)
+            .is_err());
+        assert!(signer
+            .verify_consumer_presence::<String>(&proof, 1001)
+            .is_err());
+        let legacy = signer
+            .sign_consumer_presence("platform-directory", &42, 1000)
+            .unwrap();
+        assert!(signer
+            .verify_consumer_directory::<u64>(&legacy, 1001)
+            .is_err());
+        assert!(signer
+            .sign_consumer_directory(&"x".repeat(2 * 1024 * 1024), 1000)
+            .is_err());
+    }
+
     #[test]
     fn callback_binds_application_method_target_body_and_time() {
         let signer = ServiceSigner::new(&[7; 32]).unwrap();

@@ -87,6 +87,9 @@ pub enum RoleLifecycleState {
 /// snapshot cannot extend authority: always check its deadlines at use time.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelRoleStatus {
+    pub call_registration: Option<kish_lingshu_runtime_contract::service::CallActivationVersion>,
+    pub consumer_registration:
+        Option<kish_lingshu_event_dispatch_contract::ConsumerActivationVersion>,
     pub role_generation: String,
     pub state: RoleLifecycleState,
     pub authorization_deadline: Instant,
@@ -112,6 +115,11 @@ impl ChannelRoleStatus {
 pub struct ManagedRoleChannel {
     supervisor: ManagedServiceChannel,
     pub(super) commands: RoleCommands,
+    pub(super) registration_hints: tokio::sync::broadcast::Sender<
+        kish_lingshu_event_dispatch_contract::ConsumerRegistrationHint,
+    >,
+    pub(super) registration_commands:
+        tokio::sync::mpsc::Sender<super::registration::RegistrationCommand>,
     pub(super) application_id: String,
     roles: watch::Receiver<Vec<ChannelRoleStatus>>,
     rotation: watch::Receiver<CertificateRotationStatus>,
@@ -258,6 +266,7 @@ impl ServiceChannelSessions {
             watch::channel(pool_connectivity.borrow().clone());
         let application_id = self.identity.connection.application_id().to_owned();
         let (commands, mutations) = tokio::sync::mpsc::channel(MAX_ROLE_COMMANDS);
+        let (registration_commands, registrations) = tokio::sync::mpsc::channel(MAX_ROLE_COMMANDS);
         #[cfg(feature = "event-publication-zenoh")]
         let (publication_sender, publication_receiver) =
             watch::channel(Some(self.publication_client()?));
@@ -268,6 +277,7 @@ impl ServiceChannelSessions {
             .application_id
             .as_str()
             .to_owned();
+        let registration_hints = self.registration_hints.clone();
         Ok(ManagedRoleChannel {
             supervisor: ManagedServiceChannel::start(RoleOwner {
                 pool: self,
@@ -278,6 +288,8 @@ impl ServiceChannelSessions {
                 roles,
                 mutations,
                 pending_command: None,
+                registrations,
+                pending_registration: None,
                 report: initial,
                 sender,
                 cursor: 0,
@@ -292,6 +304,8 @@ impl ServiceChannelSessions {
                 retiring_calls: Vec::new(),
             }),
             commands: RoleCommands::new(commands),
+            registration_hints,
+            registration_commands,
             application_id,
             roles: receiver,
             rotation: rotation_receiver,
@@ -317,6 +331,8 @@ struct RoleOwner {
     roles: Vec<RegisteredChannelRole>,
     mutations: tokio::sync::mpsc::Receiver<RoleCommand>,
     pending_command: Option<RoleCommand>,
+    registrations: tokio::sync::mpsc::Receiver<super::registration::RegistrationCommand>,
+    pending_registration: Option<super::registration::RegistrationCommand>,
     report: Vec<ChannelRoleStatus>,
     sender: watch::Sender<Vec<ChannelRoleStatus>>,
     cursor: usize,
@@ -361,10 +377,30 @@ impl RoleOwner {
     async fn finish_opening(&mut self) -> Result<(), ChannelSessionError> {
         // Retain the opening task when the caller cancels this wait; stop must
         // still join it and own any returned pool before further cleanup I/O.
-        self.candidate = Some(join_candidate_open(&mut self.opening).await?);
+        let mut candidate = join_candidate_open(&mut self.opening).await?;
+        candidate.registration_hints = self.pool.registration_hints.clone();
+        self.candidate = Some(candidate);
         Ok(())
     }
     async fn rotate(&mut self) -> Result<(), ChannelSessionError> {
+        let connected = self.pool.connection_authority.is_some();
+        // Declared Consumers are tied to a physical connection, unlike legacy
+        // adoptable roles. Drain and retire them before closing the old pool;
+        // the plan redeclares on the new authenticated connection after the
+        // Provider has been adopted. Never graft an old connection receipt onto
+        // a new certificate or cancel accepted Consumer work during this drain.
+        for index in (0..self.roles.len()).rev() {
+            if self.roles[index].consumer_registration.is_some()
+                || self.roles[index].call_registration.is_some()
+            {
+                self.roles[index].begin_rotation_drain();
+                self.publish();
+                self.pool.deregister_role(&mut self.roles[index]).await?;
+                self.roles.remove(index);
+                self.report.remove(index);
+                self.pending_cycle.clear();
+            }
+        }
         let identity = self.pool.prepare_certificate_rotation().await?;
         let config = self.pool.session_config();
         if config.session_count() > 2 {
@@ -424,6 +460,27 @@ impl RoleOwner {
             .unwrap()
             .finalize_certificate_rotation()
             .await?;
+        if connected {
+            let candidate = self.candidate.as_mut().unwrap();
+            candidate
+                .activate_connection_authority(
+                    RouteIdentity::new(uuid::Uuid::new_v4().to_string())
+                        .map_err(|_| ChannelSessionError::InvalidConfig)?,
+                )
+                .await?;
+            // Certificate change requires fresh grants and route proofs once.
+            // Idle connected operation never uses this transition path.
+            for batch in self.roles.chunks_mut(MAX_CHANNEL_RENEWAL_ROLES) {
+                let mut handles: Vec<_> = batch.iter_mut().collect();
+                let results = candidate.renew_role_leases(&mut handles).await?;
+                if results.iter().any(|result| result.status != 200) {
+                    return Err(ChannelSessionError::AuthorityExpired);
+                }
+                for role in batch {
+                    candidate.confirm_role_route(role).await?;
+                }
+            }
+        }
         let config = self.rotation_config.unwrap();
         let candidate = self.candidate.as_ref().unwrap();
         let scheduled_at = pool_rotation_due(candidate, config)?;
@@ -495,7 +552,14 @@ impl RoleOwner {
             status.route_deadline = current.route_deadline;
             status.remote_deregistered = current.remote_deregistered;
         }
-        self.sender.send_replace(self.report.clone());
+        self.sender.send_if_modified(|current| {
+            if *current == self.report {
+                false
+            } else {
+                *current = self.report.clone();
+                true
+            }
+        });
     }
     async fn renew_and_confirm(&mut self, plan: &[usize]) {
         let mut renewed = BTreeSet::new();
@@ -542,8 +606,6 @@ impl RoleOwner {
         }
         for &index in plan {
             if renewed.contains(&index) {
-                self.roles[index].withdraw_route_confirmation();
-                self.publish();
                 self.report[index].last_error = self
                     .pool
                     .confirm_role_route(&mut self.roles[index])
@@ -569,6 +631,15 @@ fn renewal_plan(active: &[bool], cursor: &mut usize) -> Vec<usize> {
         .collect()
 }
 impl AuthorizationOwner for RoleOwner {
+    fn refresh_deadline(&self, after: Instant) -> Option<Instant> {
+        if self.pool.connection_authority.is_none() {
+            Some(after + Duration::from_secs(10))
+        } else if self.retired.is_some() {
+            Some(after + Duration::from_secs(1))
+        } else {
+            self.rotation.borrow().scheduled_at
+        }
+    }
     fn deadline(&self) -> Instant {
         self.pool.authorization_deadline()
     }
@@ -596,6 +667,12 @@ impl AuthorizationOwner for RoleOwner {
             result = self.pool_connectivity.changed() => {
                 if result.is_err() { std::future::pending::<()>().await; }
             },
+            command = self.registrations.recv() => {
+                match command {
+                    Some(command) => self.pending_registration = Some(command),
+                    None => std::future::pending().await,
+                }
+            },
             command = self.mutations.recv() => {
                 match command {
                     Some(mut command) => {
@@ -608,6 +685,22 @@ impl AuthorizationOwner for RoleOwner {
         }
     }
     async fn process_change(&mut self) -> Result<(), ChannelSessionError> {
+        if let Some(command) = self.pending_registration.take() {
+            if !command.result.is_closed() {
+                let deadline = command.deadline.min(self.pool.authorization_deadline());
+                let result = if Instant::now() >= deadline {
+                    Err(ChannelSessionError::AuthorityExpired)
+                } else {
+                    tokio::time::timeout_at(
+                        deadline,
+                        self.pool.registration_request(&command.request),
+                    )
+                    .await
+                    .unwrap_or(Err(ChannelSessionError::Transport))
+                };
+                let _ = command.result.send(result);
+            }
+        }
         self.apply_pending_mutation().await;
         // A reconnect notification only withdraws stale local evidence. The
         // next existing bounded renewal cycle performs fresh signed probes;
@@ -636,28 +729,30 @@ impl AuthorizationOwner for RoleOwner {
                 }
             }
         }
-        // Failed physical observation leaves roles and their previous windows
-        // intact. The outer owner enforces physical expiry and logical closure.
-        if let Err(error) = self.pool.refresh_authorization().await {
-            self.publish();
-            return Err(error);
-        }
-        let active: Vec<_> = self
-            .roles
-            .iter()
-            .map(|role| self.pool.active_role(role).is_ok())
-            .collect();
-        let plan = renewal_plan(&active, &mut self.cursor);
-        self.pending_cycle = plan.iter().copied().collect();
-        if tokio::time::timeout_at(deadline, self.renew_and_confirm(&plan))
-            .await
-            .is_err()
-        {
-            for &index in &self.pending_cycle {
-                self.report[index].last_error = Some(ChannelSessionError::Transport);
+        if self.pool.connection_authority.is_none() {
+            // Failed physical observation leaves roles and their previous windows
+            // intact. The outer owner enforces physical expiry and logical closure.
+            if let Err(error) = self.pool.refresh_authorization().await {
+                self.publish();
+                return Err(error);
             }
+            let active: Vec<_> = self
+                .roles
+                .iter()
+                .map(|role| self.pool.active_role(role).is_ok())
+                .collect();
+            let plan = renewal_plan(&active, &mut self.cursor);
+            self.pending_cycle = plan.iter().copied().collect();
+            if tokio::time::timeout_at(deadline, self.renew_and_confirm(&plan))
+                .await
+                .is_err()
+            {
+                for &index in &self.pending_cycle {
+                    self.report[index].last_error = Some(ChannelSessionError::Transport);
+                }
+            }
+            self.publish();
         }
-        self.publish();
         #[cfg(feature = "service-call-zenoh")]
         if self.pool.session_config().session_count() > 2
             && self.roles.iter().any(|role| {
@@ -859,10 +954,20 @@ mod tests {
         assert!(ChannelCertificateRotationConfig::new(Duration::from_secs(20)).is_ok());
     }
 
-    #[cfg(feature = "service-manifest")]
+    #[cfg(feature = "service-call-zenoh")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "isolated native host; run zenss_channel_bootstrap_acceptance.py --role-test"]
     async fn native_managed_rotation_hands_off_twice_with_four_session_budget_and_same_roles() {
+        rotation_scenario(false).await;
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "actual matched connected certificate handoff"]
+    #[cfg(feature = "service-call-zenoh")]
+    async fn native_connected_rotation_preserves_base_and_roles_across_two_certificates() {
+        rotation_scenario(true).await;
+    }
+    #[cfg(feature = "service-call-zenoh")]
+    async fn rotation_scenario(connected: bool) {
         use kish_lingshu_foundation_contract::{
             service_transport::RouteIdentity, ServiceInstanceRegistration,
         };
@@ -902,7 +1007,14 @@ mod tests {
         } else {
             ChannelSessionConfig::new(2).unwrap()
         };
-        let pool = identity.open_sessions(config).await.unwrap();
+        let mut pool = identity.open_sessions(config).await.unwrap();
+        if connected {
+            pool.activate_connection_authority(
+                RouteIdentity::new("connected-rotation-binding").unwrap(),
+            )
+            .await
+            .unwrap();
+        }
         assert_eq!(pool.connected_lanes().await, config.lanes());
         assert_eq!(pool.session_ids().len(), config.session_count());
         let original_sessions = pool.session_ids();
@@ -1050,14 +1162,10 @@ mod tests {
             connection.channel_session_budget().available_permits(),
             4 - config.session_count()
         );
-        assert!(matches!(
-            managed.status(),
-            ChannelSupervisorStatus::Active {
-                observations: 5..,
-                last_error: None,
-                ..
-            }
-        ));
+        assert!(
+            matches!(managed.status(), ChannelSupervisorStatus::Active { observations, last_error: None, .. }
+            if if connected { observations <= 4 } else { observations >= 5 })
+        );
         for (current, initial) in managed.role_statuses().iter().zip(&original) {
             assert_eq!(current.role_generation, initial.role_generation);
             assert!(current.route_confirmed(), "{current:?}");
@@ -1218,6 +1326,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn retained_status_does_not_advertise_a_route_after_its_deadline() {
         let mut role = ChannelRoleStatus {
+            call_registration: None,
+            consumer_registration: None,
             role_generation: "role".into(),
             state: RoleLifecycleState::Active,
             authorization_deadline: Instant::now() + Duration::from_secs(30),

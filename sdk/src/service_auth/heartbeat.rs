@@ -20,6 +20,13 @@ pub(super) struct Heartbeats {
     changed: Notify,
 }
 
+impl Heartbeats {
+    #[cfg(feature = "service-zenoh")]
+    pub(super) fn is_empty(&self) -> bool {
+        self.entries.lock().unwrap_or_else(|error| error.into_inner()).is_empty()
+    }
+}
+
 pub(crate) struct RoleHeartbeat {
     id: u64,
     registry: Arc<Heartbeats>,

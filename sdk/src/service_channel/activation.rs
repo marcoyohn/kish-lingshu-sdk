@@ -158,6 +158,7 @@ impl CatalogActivationPlan {
                     target.contract_digest
                 ),
                 RoleMutation::Call {
+                    registration: None,
                     node_id: derived_node,
                     registry: projected,
                     budget: budget.clone(),
@@ -334,6 +335,8 @@ mod tests {
     use kish_lingshu_foundation_contract::service_transport::RouteIdentity;
     fn role(generation: &str) -> ChannelRoleStatus {
         ChannelRoleStatus {
+            call_registration: None,
+            consumer_registration: None,
             role_generation: generation.into(),
             state: RoleLifecycleState::Active,
             authorization_deadline: tokio::time::Instant::now() + Duration::from_secs(30),

@@ -362,6 +362,90 @@ impl ConsumerRegistry {
         })
     }
 
+    /// Project the source catalog onto handlers actually bound to this registry.
+    /// Declaration-only handlers are not advertised as executable. The connected
+    /// protocol requires explicit groups; legacy ungrouped registrations remain
+    /// available through their existing enrollment API.
+    pub fn registration_declarations(
+        &self,
+        catalog: &kish_lingshu_runtime_contract::provider::ProviderCatalog,
+    ) -> Result<
+        Vec<kish_lingshu_event_dispatch_contract::ConsumerDeclaration>,
+        kish_lingshu_event_dispatch_contract::ConsumerRegistrationError,
+    > {
+        use kish_lingshu_event_dispatch_contract::{
+            ConsumerDeclaration, ConsumerRegistrationError as Error,
+            MAX_REGISTERED_CONSUMERS_PER_CONNECTION,
+        };
+        if catalog.application_id != self.app_id
+            || catalog.validate().is_err()
+            || self
+                .consumers
+                .keys()
+                .any(|selector| selector.consumer_group().is_empty())
+        {
+            return Err(Error::InvalidDeclaration);
+        }
+        let Some(manifest) = &catalog.events else {
+            return if self.consumers.is_empty() {
+                Ok(Vec::new())
+            } else {
+                Err(Error::InvalidDeclaration)
+            };
+        };
+        let mut remaining: HashSet<_> = self.consumers.keys().cloned().collect();
+        let mut result = Vec::new();
+        for definition in &manifest.consumers {
+            let selectors: Vec<_> = definition
+                .selectors
+                .iter()
+                .filter(|selector| {
+                    self.consumers.keys().any(|bound| {
+                        bound.consumer_group() == definition.group_key
+                            && bound.topic() == selector.topic
+                            && bound.event_type() == selector.event_type
+                    })
+                })
+                .cloned()
+                .collect();
+            if selectors.is_empty() {
+                continue;
+            }
+            for selector in &selectors {
+                let bound = ConsumerSelector::new(&selector.topic, &selector.event_type)
+                    .and_then(|s| s.with_consumer_group(&definition.group_key))
+                    .map_err(|_| Error::InvalidDeclaration)?;
+                if !remaining.remove(&bound) {
+                    return Err(Error::SourceConflict);
+                }
+            }
+            if result.len() >= MAX_REGISTERED_CONSUMERS_PER_CONNECTION {
+                return Err(Error::CapacityExceeded);
+            }
+            let events = manifest
+                .events
+                .iter()
+                .filter(|event| selectors.iter().any(|s| s.event_key == event.key))
+                .cloned()
+                .collect();
+            let mut consumer = definition.clone();
+            consumer.selectors = selectors;
+            let declaration = ConsumerDeclaration {
+                provider_key: catalog.provider_key.clone(),
+                producer: manifest.producer.clone(),
+                consumer,
+                events,
+            };
+            declaration.validate()?;
+            result.push(declaration);
+        }
+        if !remaining.is_empty() {
+            return Err(Error::InvalidDeclaration);
+        }
+        result.sort_by(|a, b| a.consumer.key.cmp(&b.consumer.key));
+        Ok(result)
+    }
+
     fn insert(
         &mut self,
         selector: ConsumerSelector,

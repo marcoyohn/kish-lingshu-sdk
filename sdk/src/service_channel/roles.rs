@@ -41,9 +41,9 @@ type RoleQuery = (
     Option<tokio::sync::OwnedSemaphorePermit>,
 );
 
-struct VerifiedRoleControlReply {
-    envelope: TransportEnvelope,
-    issued_at_unix_ms: i64,
+pub(super) struct VerifiedRoleControlReply {
+    pub(super) envelope: TransportEnvelope,
+    pub(super) issued_at_unix_ms: i64,
 }
 
 fn reserved_control_kind(bytes: &[u8], limit: usize) -> bool {
@@ -57,7 +57,9 @@ fn reserved_control_kind(bytes: &[u8], limit: usize) -> bool {
     matches!(
         serde_json::from_slice::<Header>(bytes),
         Ok(Header {
-            kind: MessageKind::BindLane | MessageKind::CancelCall
+            kind: MessageKind::BindLane
+                | MessageKind::CancelCall
+                | MessageKind::ConsumerRegistrationChanged
         })
     )
 }
@@ -87,6 +89,10 @@ async fn next_role_query<T>(
 /// probes and an optional immutable Provider catalog. Execution requires a
 /// separate opt-in enable_sync_calls or enable_async_calls binding.
 pub struct RegisteredChannelRole {
+    pub(super) call_registration:
+        Option<kish_lingshu_runtime_contract::service::CallActivationVersion>,
+    pub(super) consumer_registration:
+        Option<kish_lingshu_event_dispatch_contract::ConsumerActivationVersion>,
     pub(super) response: ChannelRoleEnrollmentResponse,
     pub(super) logical_key: String,
     catalog: Option<Arc<super::catalog::CatalogSnapshot>>,
@@ -179,6 +185,8 @@ impl RegisteredChannelRole {
             unreachable!()
         };
         super::ChannelRoleStatus {
+            consumer_registration: self.consumer_registration.clone(),
+            call_registration: self.call_registration.clone(),
             role_generation: route.role_generation.as_str().into(),
             state,
             authorization_deadline,
@@ -456,7 +464,8 @@ impl ServiceChannelSessions {
         let response: ChannelRoleRenewalResponse = serde_json::from_str(response.payload.get())
             .map_err(|_| ChannelSessionError::InvalidResponse)?;
         let now = chrono::Utc::now().timestamp_millis();
-        let windows = validate_renewal_response(
+        let windows = validate_bound_renewal_response(
+            self.connection_authority.as_ref(),
             &response,
             &generations,
             started,
@@ -496,10 +505,14 @@ impl ServiceChannelSessions {
             return Err(ChannelSessionError::InvalidConfig);
         };
         let request = ChannelRoleRouteConfirmation {
+            call_registration_version: role.call_registration.clone(),
+            registration_version: role.consumer_registration.clone(),
             role_generation: route.role_generation.as_str().into(),
             route_revision: *route_revision,
         };
-        role.withdraw_route_confirmation();
+        // Refresh without creating an artificial readiness gap. The previous
+        // proof keeps its original deadline; connectivity changes independently
+        // invalidate the gate, and only a successful reply extends the window.
         let connectivity_revision = role
             .connectivity_gate
             .revision()
@@ -647,16 +660,21 @@ impl ServiceChannelSessions {
             .map(|reply| reply.envelope)
     }
 
-    async fn verified_role_control<T: serde::Serialize>(
+    pub(super) async fn verified_role_control<T: serde::Serialize>(
         &self,
         kind: MessageKind,
         value: &T,
     ) -> Result<VerifiedRoleControlReply, ChannelSessionError> {
-        super::trace::scope(None, self.role_control_scoped(kind, value)).await
+        super::trace::scope(
+            None,
+            self.role_control_scoped(self.control_session()?, kind, value),
+        )
+        .await
     }
 
-    async fn role_control_scoped<T: serde::Serialize>(
+    pub(super) async fn role_control_scoped<T: serde::Serialize>(
         &self,
+        session: &zenoh::Session,
         kind: MessageKind,
         value: &T,
     ) -> Result<VerifiedRoleControlReply, ChannelSessionError> {
@@ -709,7 +727,6 @@ impl ServiceChannelSessions {
         if request.len() > MAX_CHANNEL_CONTROL_BYTES {
             return Err(ChannelSessionError::InvalidConfig);
         }
-        let session = self.control_session()?;
         let mut observation = observation::ExchangeObservation::new(Plane::Control);
         let operation = async {
             let replies = session
@@ -825,6 +842,36 @@ impl ServiceChannelSessions {
         let response: ChannelRoleEnrollmentResponse =
             serde_json::from_str(verified.envelope.payload.get())
                 .map_err(|_| ChannelSessionError::InvalidResponse)?;
+        self.install_registered_role(
+            request,
+            None,
+            None,
+            catalog,
+            response,
+            started,
+            verified.issued_at_unix_ms,
+        )
+        .await
+    }
+
+    pub(super) async fn install_registered_role(
+        &self,
+        request: ChannelRoleEnrollment,
+        consumer_registration: Option<
+            kish_lingshu_event_dispatch_contract::ConsumerActivationVersion,
+        >,
+        call_registration: Option<kish_lingshu_runtime_contract::service::CallActivationVersion>,
+        catalog: Option<Arc<super::catalog::CatalogSnapshot>>,
+        response: ChannelRoleEnrollmentResponse,
+        started: Instant,
+        issued_at_unix_ms: i64,
+    ) -> Result<RegisteredChannelRole, ChannelSessionError> {
+        let initial = self.identity.bootstrap_response();
+        let requested_lanes = match &request {
+            ChannelRoleEnrollment::Call(r) => r.endpoint.lane_count(),
+            ChannelRoleEnrollment::Consumer(r) => r.endpoint.lane_count(),
+            ChannelRoleEnrollment::Provider(_) => 1,
+        };
         let (endpoint, generation, expires) = validate_registration_response(&request, &response)?;
         let ServiceEndpoint::Zenoh { route, lanes, .. } = &endpoint else {
             return Err(ChannelSessionError::InvalidResponse);
@@ -852,9 +899,10 @@ impl ServiceChannelSessions {
         {
             return Err(ChannelSessionError::InvalidResponse);
         }
-        let deadline = initial_role_deadline(
+        let deadline = bound_role_deadline(
+            self.connection_authority.as_ref(),
             expires,
-            verified.issued_at_unix_ms,
+            issued_at_unix_ms,
             now,
             started,
             self.authorization_deadline(),
@@ -875,6 +923,8 @@ impl ServiceChannelSessions {
             ChannelRoleEnrollment::Consumer(r) => format!("consumer:{}", r.group_key),
         };
         let mut handle = RegisteredChannelRole {
+            consumer_registration,
+            call_registration,
             response,
             logical_key,
             catalog,
@@ -1113,6 +1163,7 @@ impl ServiceChannelSessions {
         let consumer_slot = consumers.clone();
         #[cfg(feature = "event-consumer-zenoh")]
         let consumer_tasks_budget = self.consumer_query_slots.clone();
+        let registration_hints = self.registration_hints.clone();
         let task = tokio::spawn(async move {
             let mut call_tasks = tokio::task::JoinSet::<()>::new();
             let mut control_burst = 0;
@@ -1341,6 +1392,21 @@ impl ServiceChannelSessions {
                         .to_bytes();
                     let now = chrono::Utc::now().timestamp_millis();
                     if let Some(snapshot) = &catalog {
+                        if let Ok(envelope) =
+                            TransportEnvelope::decode(&bytes, &target, &initial.application_id, now)
+                        {
+                            if envelope.kind == MessageKind::ConsumerRegistrationChanged {
+                                return super::registration::hint_reply(
+                                    envelope,
+                                    &endpoint,
+                                    role_window.borrow().expires_at_ms,
+                                    &connection,
+                                    &initial,
+                                    &signer,
+                                    &registration_hints,
+                                );
+                            }
+                        }
                         if route_catalog_target(&endpoint, snapshot, &target) {
                             if !admission.ready() {
                                 return Err(ChannelSessionError::Transport);
@@ -1518,7 +1584,31 @@ fn initial_role_deadline(
     started: Instant,
     physical_deadline: Instant,
 ) -> Result<Instant, ChannelSessionError> {
+    bound_role_deadline(None, expires, issued, now, started, physical_deadline)
+}
+
+fn bound_role_deadline(
+    connection: Option<
+        &kish_lingshu_foundation_contract::service_transport::connection::ConnectionAttestation,
+    >,
+    expires: i64,
+    issued: i64,
+    now: i64,
+    started: Instant,
+    physical_deadline: Instant,
+) -> Result<Instant, ChannelSessionError> {
     use kish_lingshu_foundation_contract::service_transport::bootstrap::MAX_BOOTSTRAP_CLOCK_SKEW_MS;
+    let maximum = if let Some(proof) = connection {
+        proof
+            .validate(now)
+            .map_err(|_| ChannelSessionError::InvalidResponse)?;
+        if !proof.complete() || expires > proof.expires_unix_ms {
+            return Err(ChannelSessionError::InvalidResponse);
+        }
+        300_000
+    } else {
+        30_000
+    };
     let duration = expires
         .checked_sub(issued)
         .ok_or(ChannelSessionError::InvalidResponse)?;
@@ -1526,7 +1616,7 @@ fn initial_role_deadline(
         || issued < 0
         || issued > now.saturating_add(MAX_BOOTSTRAP_CLOCK_SKEW_MS)
         || expires <= now
-        || !(1..=30_000).contains(&duration)
+        || !(1..=maximum).contains(&duration)
     {
         return Err(ChannelSessionError::InvalidResponse);
     }
@@ -1602,6 +1692,39 @@ fn validate_renewal_response(
     physical_deadline: Instant,
     certificate_expires_at_ms: i64,
 ) -> Result<Vec<Option<RoleLeaseWindow>>, ChannelSessionError> {
+    validate_bound_renewal_response(
+        None,
+        response,
+        generations,
+        started,
+        now,
+        physical_deadline,
+        certificate_expires_at_ms,
+    )
+}
+
+fn validate_bound_renewal_response(
+    connection: Option<
+        &kish_lingshu_foundation_contract::service_transport::connection::ConnectionAttestation,
+    >,
+    response: &ChannelRoleRenewalResponse,
+    generations: &[String],
+    started: Instant,
+    now: i64,
+    physical_deadline: Instant,
+    certificate_expires_at_ms: i64,
+) -> Result<Vec<Option<RoleLeaseWindow>>, ChannelSessionError> {
+    let maximum_expiry = if let Some(proof) = connection {
+        proof
+            .validate(now)
+            .map_err(|_| ChannelSessionError::InvalidResponse)?;
+        if !proof.complete() {
+            return Err(ChannelSessionError::InvalidResponse);
+        }
+        proof.expires_unix_ms.min(certificate_expires_at_ms)
+    } else {
+        response.renewal_issued_at_ms.saturating_add(30_000)
+    };
     if response.roles.len() != generations.len()
         || response.renewal_issued_at_ms < 0
         || response.renewal_issued_at_ms > now.saturating_add(kish_lingshu_foundation_contract::service_transport::bootstrap::MAX_BOOTSTRAP_CLOCK_SKEW_MS) {
@@ -1620,7 +1743,7 @@ fn validate_renewal_response(
             (200, Some(lease), Some(expires))
                 if expires > now
                     && expires <= lease
-                    && lease <= response.renewal_issued_at_ms.saturating_add(30_000)
+                    && lease <= maximum_expiry
                     && expires <= certificate_expires_at_ms =>
             {
                 let remaining = (expires - now).min(expires - response.renewal_issued_at_ms);
@@ -2365,6 +2488,8 @@ mod tests {
             .role_control(
                 MessageKind::BindLane,
                 &ChannelRoleRouteConfirmation {
+                    call_registration_version: None,
+                    registration_version: None,
                     role_generation: omitted_generation,
                     route_revision: 1
                 }
@@ -2805,6 +2930,8 @@ mod tests {
                 .role_control(
                     MessageKind::BindLane,
                     &ChannelRoleRouteConfirmation {
+                        call_registration_version: None,
+                        registration_version: None,
                         role_generation: generation,
                         route_revision: 1,
                     }

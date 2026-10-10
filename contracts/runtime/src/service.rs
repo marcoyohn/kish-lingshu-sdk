@@ -21,7 +21,11 @@ pub use admission::*;
 mod heartbeat;
 pub use heartbeat::*;
 #[cfg(feature = "service-transport")]
+mod call_registration;
+#[cfg(feature = "service-transport")]
 mod enrollment;
+#[cfg(feature = "service-transport")]
+pub use call_registration::*;
 #[cfg(feature = "service-transport")]
 pub use enrollment::*;
 #[cfg(feature = "service-transport")]

@@ -129,6 +129,8 @@ mod tests {
                 channel_sessions: Arc::new(tokio::sync::Semaphore::new(
                     kish_lingshu_foundation_contract::service_transport::MAX_DATA_LANES,
                 )),
+                #[cfg(feature = "service-zenoh")]
+                native_runtime: Arc::default(),
                 heartbeats: Arc::default(),
                 #[cfg(feature = "service-zenoh")]
                 catalog_snapshots: Arc::new(tokio::sync::Semaphore::new(8 * 1024 * 1024)),

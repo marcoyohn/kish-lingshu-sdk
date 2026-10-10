@@ -186,7 +186,7 @@ async fn pool(
     connection: &ServiceConnection,
     instance: &str,
 ) -> super::super::ServiceChannelSessions {
-    connection
+    let mut pool = connection
         .bootstrap_test_channel(
             ServiceInstanceRegistration {
                 instance_id: instance.into(),
@@ -199,7 +199,15 @@ async fn pool(
         .unwrap()
         .open_sessions(ChannelSessionConfig::host_test())
         .await
-        .unwrap()
+        .unwrap();
+    if std::env::var("LINGSHU_CONNECTED_LIFECYCLE_TEST").as_deref() == Ok("true") {
+        pool.activate_connection_authority(
+            RouteIdentity::new(format!("{instance}-connection")).unwrap(),
+        )
+        .await
+        .unwrap();
+    }
+    pool
 }
 fn registry(app: &str, handlers: Arc<Handlers>) -> Arc<ConsumerRegistry> {
     let mut builder = ConsumerRegistry::builder(app).unwrap();
@@ -824,11 +832,24 @@ async fn native_event_targets_one_member_per_group_retries_only_failed_group_and
     if rotates {
         tokio::time::timeout(Duration::from_secs(35), async {
             while managed.rotation_status().completed == 0 {
+                let rotation = managed.rotation_status();
+                assert_eq!(
+                    rotation.last_error,
+                    None,
+                    "Consumer rotation failed: {rotation:?}; roles: {:?}",
+                    managed.role_statuses()
+                );
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|_| {
+            panic!(
+                "Consumer rotation timed out: {:?}; roles: {:?}",
+                managed.rotation_status(),
+                managed.role_statuses()
+            )
+        });
     }
     assert!(managed.role_statuses().iter().all(|s| s.route_confirmed()));
     dispatch

@@ -20,10 +20,20 @@ pub(super) enum RoleMutation {
     Remove(RouteIdentity),
     #[cfg(feature = "service-call-zenoh")]
     Call {
+        registration: Option<kish_lingshu_runtime_contract::service::CallActivationVersion>,
         node_id: String,
         registry: Arc<crate::services::ServiceRegistry>,
         budget: crate::ServiceExecutionBudget,
         asynchronous: bool,
+    },
+    #[cfg(feature = "event-consumer-zenoh")]
+    DeclaredConsumer {
+        version: kish_lingshu_event_dispatch_contract::ConsumerActivationVersion,
+        group_key: String,
+        node_id: String,
+        maximum_in_flight: u32,
+        registry: Arc<crate::event_dispatch::ConsumerRegistry>,
+        budget: crate::ServiceExecutionBudget,
     },
     #[cfg(feature = "event-consumer-zenoh")]
     Consumer {
@@ -152,6 +162,7 @@ impl ManagedRoleChannel {
         self.commands
             .send(
                 RoleMutation::Call {
+                    registration: None,
                     node_id,
                     registry,
                     budget,

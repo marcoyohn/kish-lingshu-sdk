@@ -86,6 +86,11 @@ impl ChannelSessionConfig {
 /// signed control observation may update it; role and route binding are separate.
 /// Call `close` to join cleanup; dropping also requests cleanup on the runtime.
 pub struct ServiceChannelSessions {
+    pub(super) connection_authority: Option<
+        kish_lingshu_foundation_contract::service_transport::connection::ConnectionAttestation,
+    >,
+    pub(super) connection_stop: watch::Sender<bool>,
+    pub(super) connection_observer: Option<super::connection_registration::ControlOwnerObservation>,
     pub(super) identity: ServiceChannelIdentity,
     pub(super) sessions: Vec<zenoh::Session>,
     config: ChannelSessionConfig,
@@ -93,6 +98,9 @@ pub struct ServiceChannelSessions {
     pub(super) transport: ManagedPool,
     pub(super) rotation_finalized: bool,
     pub(super) report_draining: bool,
+    pub(super) registration_hints: tokio::sync::broadcast::Sender<
+        kish_lingshu_event_dispatch_contract::ConsumerRegistrationHint,
+    >,
     pub(super) authority: watch::Receiver<Instant>,
     pub(super) connectivity: watch::Receiver<super::ChannelConnectivityStatus>,
     #[cfg(feature = "service-call-zenoh")]
@@ -345,6 +353,11 @@ impl ServiceChannelSessions {
             super::trace::assert_verified_reply_trace(&response);
             let authority: ChannelAuthorization = serde_json::from_str(response.payload.get())
                 .map_err(|_| ChannelSessionError::InvalidResponse)?;
+            if authority.connection.as_ref() != self.connection_authority.as_ref() {
+                // A finite pool cannot opt into connection authority merely by
+                // observing a response intended for a different lifecycle.
+                return Err(ChannelSessionError::InvalidResponse);
+            }
             authority
                 .validate(
                     &self.identity.credential.response,
@@ -443,6 +456,12 @@ impl ServiceChannelSessions {
         self.transport.request_close();
     }
     pub async fn close(&mut self) -> Result<(), ChannelSessionError> {
+        // Intentional shutdown is not loss of authority. Stop the additional
+        // connection observers, then let the transport record Explicit. Sending
+        // connection_stop here races its higher-priority revocation future and
+        // aborts a valid full-pool drain-before-open certificate handoff.
+        // A real root/connection loss already observed still wins in transport.
+        self.connection_observer.take();
         self.transport.close().await.map_err(Into::into)
     }
 }
@@ -512,12 +531,18 @@ impl ServiceChannelIdentity {
             .ensure_open()
             .map_err(|_| ChannelSessionError::Closed)?;
         let mut root_closed = self.connection.subscribe_closed();
+        let (connection_stop, mut connection_stopped) = watch::channel(false);
         let transport = ManagedPool::open(
             transport_options(&self)?,
             config.platform(),
             self.connection.channel_session_budget(),
             self.authorization_deadline,
-            async move { logical_closed(&mut root_closed).await },
+            async move {
+                tokio::select! {
+                    _ = logical_closed(&mut root_closed) => {},
+                    _ = connection_stopped.wait_for(|stopped| *stopped) => {},
+                }
+            },
             POOL_METRICS,
         )
         .await?;
@@ -526,6 +551,9 @@ impl ServiceChannelIdentity {
         let authority = transport.subscribe_deadline();
         let connectivity_status = transport.subscribe_connectivity();
         Ok(ServiceChannelSessions {
+            connection_authority: None,
+            connection_stop,
+            connection_observer: None,
             identity: self,
             sessions,
             config,
@@ -533,6 +561,7 @@ impl ServiceChannelIdentity {
             transport,
             rotation_finalized: false,
             report_draining: false,
+            registration_hints: tokio::sync::broadcast::channel(64).0,
             authority,
             connectivity: connectivity_status,
             #[cfg(feature = "service-call-zenoh")]
@@ -1067,6 +1096,9 @@ pub(crate) fn test_sync_pool_lanes(
     let authority = transport.subscribe_deadline();
     let connectivity = transport.subscribe_connectivity();
     ServiceChannelSessions {
+        connection_authority: None,
+        connection_stop: watch::channel(false).0,
+        connection_observer: None,
         identity,
         sessions,
         config,
@@ -1074,6 +1106,7 @@ pub(crate) fn test_sync_pool_lanes(
         transport,
         rotation_finalized: false,
         report_draining: false,
+        registration_hints: tokio::sync::broadcast::channel(64).0,
         authority,
         connectivity,
         call_query_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(16)),

@@ -515,6 +515,7 @@ mod tests {
         use super::super::channel::ChannelAuthorization;
         let initial = response();
         let authority = ChannelAuthorization {
+            connection: None,
             application_id: initial.application_id.clone(),
             instance: initial.instance.clone(),
             certificate_identity: initial.certificate.certificate_identity.clone(),
@@ -541,6 +542,7 @@ mod tests {
         let receipt = ChannelRotationFinalization {
             previous_certificate_identity: predecessor.clone(),
             authorization: ChannelAuthorization {
+                connection: None,
                 application_id: initial.application_id.clone(),
                 instance: initial.instance.clone(),
                 certificate_identity: initial.certificate.certificate_identity.clone(),
