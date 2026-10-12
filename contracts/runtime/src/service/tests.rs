@@ -3,7 +3,7 @@ use serde_json::json;
 
 fn operation() -> OperationDefinition {
     OperationDefinition {
-        user_task_completion: None,
+        human_task: None,
         operation_key: "generate".into(),
         version: "v1".into(),
         description: String::new(),
@@ -19,6 +19,12 @@ fn operation() -> OperationDefinition {
         }),
         events: BTreeSet::new(),
     }
+}
+#[test]
+fn operation_catalog_rejects_retired_lifecycle_metadata() {
+    let mut value = serde_json::to_value(operation()).unwrap();
+    value.as_object_mut().unwrap().insert("human_interaction".into(), json!({}));
+    assert!(serde_json::from_value::<OperationDefinition>(value).is_err());
 }
 #[test]
 fn digest_is_independent_of_object_key_order_but_covers_contract() {
@@ -82,7 +88,7 @@ fn invocation_validates_application_mode_and_expiry_without_event_fields() {
             deadline_ms: 1000,
             trace_id: None,
             invocation: InvocationRole::Call(CallContext {
-                user_task_completion: None,
+                human_task: None,
                 call_id: "call-1".into(),
                 attempt: 1,
                 caller: "workflow".into(),

@@ -1,6 +1,6 @@
 [package]
 name = "kish-lingshu-sdk"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Rust SDK for Kish Lingshu application integrations"
@@ -56,13 +56,7 @@ service-zenoh = ["service-channel", "dep:base64", "dep:metrics", "dep:zenoh", "d
 service-plaintext = ["service-zenoh", "zenoh/auth_pubkey", "zenss-client-sdk/plaintext", "dep:rsa", "dep:rand"]
 # Explicit finite Call bindings; Async additionally requires enable_async_calls.
 service-call-zenoh = ["service-zenoh", "service-execution"]
-user-task-completion = [
-  "dep:inventory",
-  "dep:jsonschema",
-  "dep:kish-lingshu-sdk-macros",
-  "dep:schemars",
-]
-service-manifest = ["user-task-completion", "dep:inventory", "dep:jsonschema", "dep:schemars", "dep:kish-lingshu-sdk-macros"]
+service-manifest = [ "dep:inventory", "dep:jsonschema", "dep:schemars", "dep:kish-lingshu-sdk-macros"]
 service-event-http = ["service-http", "event-consumer-http"]
 service-execution = ["service-manifest", "service-auth-core"]
 service-http = ["service-execution", "service-auth", "dep:axum", "dep:tokio", "dep:reqwest"]
@@ -87,7 +81,7 @@ jsonschema = { workspace = true, optional = true }
 kish-lingshu-event-dispatch-contract = { workspace = true }
 kish-lingshu-foundation-contract = { workspace = true }
 kish-lingshu-runtime-contract = { workspace = true }
-kish-lingshu-sdk-macros = { path = "macros", version = "=0.7.0", optional = true }
+kish-lingshu-sdk-macros = { path = "macros", version = "=0.8.0", optional = true }
 metrics = { workspace = true, optional = true }
 percent-encoding = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
@@ -119,3 +113,8 @@ trybuild = "1"
 name = "native-application"
 path = "examples/native_application.rs"
 required-features = ["service-call-zenoh", "event-consumer-zenoh", "event-publication-zenoh"]
+
+[[example]]
+name = "approval-draft"
+path = "examples/approval_draft.rs"
+required-features = ["http-client"]

@@ -23,7 +23,10 @@ pub(super) struct Heartbeats {
 impl Heartbeats {
     #[cfg(feature = "service-zenoh")]
     pub(super) fn is_empty(&self) -> bool {
-        self.entries.lock().unwrap_or_else(|error| error.into_inner()).is_empty()
+        self.entries
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .is_empty()
     }
 }
 

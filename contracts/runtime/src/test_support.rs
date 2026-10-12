@@ -21,17 +21,12 @@ use crate::*;
 
 mod event_publisher;
 mod product_runtime;
-mod user_task;
 
 pub use event_publisher::{
     assert_event_publisher_contract, ContractEventPublisher, EventPublisherContractReport,
 };
 pub use product_runtime::{
     assert_product_runtime_contract, ContractProductRuntimeFixture, ProductRuntimeContractReport,
-};
-pub use user_task::{
-    assert_user_task_runtime_contract, ContractUserTaskRuntime, UserTaskRuntimeContractReport,
-    CONTRACT_READ_TASK_ID, CONTRACT_TODO_TASK_ID,
 };
 
 const CONTRACT_WORKFLOW_ID: WorkflowId = WorkflowId(42);
@@ -1330,6 +1325,5 @@ mod tests {
 
         assert_eq!(report.events.event_id.get(), 8_101);
         assert_eq!(report.workflow.workflow_id, CONTRACT_WORKFLOW_ID);
-        assert_eq!(report.user_tasks.todo_task_id, CONTRACT_TODO_TASK_ID);
     }
 }

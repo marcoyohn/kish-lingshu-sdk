@@ -4,7 +4,6 @@
 //! dependencies. Runtime implementations live in higher-level crates.
 
 pub mod admission;
-pub mod retry;
 mod authorization;
 mod catalog;
 mod client;
@@ -13,16 +12,17 @@ mod conversation;
 mod error;
 mod event;
 mod facade;
+pub mod human_task;
 mod identity;
+mod pagination;
 mod ports;
 mod problem;
 mod request;
 mod result_projection;
+pub mod retry;
 pub mod service;
 mod suspension;
 pub mod user_context;
-mod user_task;
-mod user_task_completion;
 mod workflow;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -36,14 +36,14 @@ pub use conversation::*;
 pub use error::*;
 pub use event::*;
 pub use facade::*;
+pub use human_task::*;
 pub use identity::*;
+pub use pagination::*;
 pub use ports::*;
 pub use problem::*;
 pub use request::*;
 pub use result_projection::*;
 pub use suspension::*;
-pub use user_task::*;
-pub use user_task_completion::*;
 pub use workflow::*;
 
 pub mod provider;

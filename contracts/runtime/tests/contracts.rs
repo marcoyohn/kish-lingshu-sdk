@@ -69,53 +69,6 @@ fn workflow_command_fixtures_round_trip_without_trusted_coordinates() {
 }
 
 #[test]
-fn user_task_fixtures_cover_queries_values_actions_and_receipts() {
-    let fixture: serde_json::Value =
-        serde_json::from_str(include_str!("fixtures/user_tasks.json")).unwrap();
-
-    let application_query: ApplicationTaskQuery =
-        serde_json::from_value(fixture["application_query"].clone()).unwrap();
-    let current_query: CurrentUserTaskQuery =
-        serde_json::from_value(fixture["current_user_query"].clone()).unwrap();
-    let task: UserTask = serde_json::from_value(fixture["task"].clone()).unwrap();
-    let claim: ClaimTask = serde_json::from_value(fixture["actions"]["claim"].clone()).unwrap();
-    let mark_read: MarkTaskRead =
-        serde_json::from_value(fixture["actions"]["mark_read"].clone()).unwrap();
-    let save_draft: SaveTaskDraft =
-        serde_json::from_value(fixture["actions"]["save_draft"].clone()).unwrap();
-    let submit: SubmitTask = serde_json::from_value(fixture["actions"]["submit"].clone()).unwrap();
-    let receipt: TaskActionReceipt = serde_json::from_value(fixture["receipt"].clone()).unwrap();
-
-    assert_eq!(application_query.pagination.page_size, 50);
-    assert_eq!(
-        current_query.participant_state,
-        Some(UserTaskParticipantState::Unknown(
-            "awaiting_delegate".into()
-        ))
-    );
-    assert_eq!(task.summary.revision.get(), 7);
-    assert_eq!(claim.precondition.expected_revision.get(), 6);
-    assert_eq!(mark_read.precondition.task_id.get(), 7002);
-    assert_eq!(save_draft.draft, json!({"approved": true}));
-    assert_eq!(submit.submission["comment"], "verified");
-    assert_eq!(
-        receipt.observation_cursor.as_ref().unwrap().as_ref(),
-        "run-9001:21"
-    );
-
-    assert_eq!(
-        serde_json::to_value(application_query).unwrap(),
-        fixture["application_query"]
-    );
-    assert_eq!(
-        serde_json::to_value(current_query).unwrap(),
-        fixture["current_user_query"]
-    );
-    assert_eq!(serde_json::to_value(task).unwrap(), fixture["task"]);
-    assert_eq!(serde_json::to_value(receipt).unwrap(), fixture["receipt"]);
-}
-
-#[test]
 fn client_mcp_binding_serializes_only_schema_and_logical_identity() {
     let bindings = RuntimeBindings {
         workspace_bindings: None,
@@ -134,6 +87,7 @@ fn client_mcp_binding_serializes_only_schema_and_logical_identity() {
         }],
         trusted_start: None,
         internal_published_start: None,
+        published_define_id: None,
     };
 
     let wire = serde_json::to_value(bindings).unwrap();

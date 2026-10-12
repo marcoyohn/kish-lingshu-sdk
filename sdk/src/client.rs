@@ -7,8 +7,6 @@ use crate::{
     binding::{BindingRef, ProductRuntimeBinding},
     config::ClientConfig,
     event_dispatch::EventDispatch,
-    user_task::ApplicationUserTasks,
-    user_task::CurrentUserTasks,
     workflow::Workflows,
     AuthenticatedUser, Error, RequestOptions, ServiceCredential, UserCredential,
 };
@@ -84,6 +82,12 @@ impl<P: Principal> Client<P> {
         crate::workspaces::Workspaces::new(self.inner.clone())
     }
 
+    /// Observe and act on human tasks in a workflow instance, including draft editing.
+    /// Business inboxes and claim ownership remain with the external task owner.
+    pub fn human_tasks(&self) -> crate::human_tasks::HumanTasks<P> {
+        crate::human_tasks::HumanTasks::new(self.inner.clone())
+    }
+
     pub fn workflows(&self) -> Workflows<P> {
         Workflows::new(self.inner.clone())
     }
@@ -97,17 +101,9 @@ impl Client<ServicePrincipal> {
     pub fn event_dispatch(&self) -> EventDispatch {
         EventDispatch::new(self.inner.clone())
     }
-
-    pub fn user_tasks(&self) -> ApplicationUserTasks {
-        ApplicationUserTasks::new(self.inner.clone())
-    }
 }
 
 impl Client<UserPrincipal> {
-    pub fn user_tasks(&self) -> CurrentUserTasks {
-        CurrentUserTasks::new(self.inner.clone())
-    }
-
     pub async fn authenticated_user(
         &self,
         options: RequestOptions,

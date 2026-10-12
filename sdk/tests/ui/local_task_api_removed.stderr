@@ -1,0 +1,23 @@
+error[E0599]: no method named `user_tasks` found for reference `&kish_lingshu_sdk::Client<ServicePrincipal>` in the current scope
+ --> tests/ui/local_task_api_removed.rs:4:20
+  |
+4 |     let _ = client.user_tasks();
+  |                    ^^^^^^^^^^ method not found in `&kish_lingshu_sdk::Client<ServicePrincipal>`
+
+error[E0599]: no method named `user_tasks` found for reference `&kish_lingshu_sdk::Client<UserPrincipal>` in the current scope
+ --> tests/ui/local_task_api_removed.rs:8:20
+  |
+8 |     let _ = client.user_tasks();
+  |                    ^^^^^^^^^^ method not found in `&kish_lingshu_sdk::Client<UserPrincipal>`
+
+error[E0599]: no method named `interactions` found for reference `&kish_lingshu_sdk::Client<ServicePrincipal>` in the current scope
+  --> tests/ui/local_task_api_removed.rs:12:20
+   |
+12 |     let _ = client.interactions();
+   |                    ^^^^^^^^^^^^ method not found in `&kish_lingshu_sdk::Client<ServicePrincipal>`
+
+error[E0599]: no method named `interactions` found for reference `&kish_lingshu_sdk::Client<UserPrincipal>` in the current scope
+  --> tests/ui/local_task_api_removed.rs:16:20
+   |
+16 |     let _ = client.interactions();
+   |                    ^^^^^^^^^^^^ method not found in `&kish_lingshu_sdk::Client<UserPrincipal>`

@@ -11,7 +11,6 @@ pub const UNAUTHORIZED_PROBLEM: &str = "unauthorized";
 pub const FORBIDDEN_PROBLEM: &str = "forbidden";
 pub const NOT_FOUND_PROBLEM: &str = "not_found";
 pub const CONFLICT_PROBLEM: &str = "conflict";
-pub const STALE_TASK_REVISION_PROBLEM: &str = "stale_task_revision";
 pub const STALE_SUSPENSION_PROBLEM: &str = "stale_suspension";
 pub const REPLAY_UNAVAILABLE_PROBLEM: &str = "replay_unavailable";
 pub const UNSUPPORTED_PROBLEM: &str = "unsupported";

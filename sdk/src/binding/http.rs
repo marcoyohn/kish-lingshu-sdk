@@ -11,18 +11,16 @@ use std::{
 };
 
 use async_trait::async_trait;
+use kish_lingshu_runtime_contract::human_task::*;
 
 use base64::Engine as _;
 use chrono::{DateTime, SecondsFormat, Utc};
 use futures_util::StreamExt;
 use kish_lingshu_event_dispatch_contract::{EventId, EventRecord, PublishEvent, PublishReceipt};
 use kish_lingshu_runtime_contract::{
-    ApplicationProblem, ApplicationTaskQuery, ApplicationTaskSummary, CommandAck,
-    CurrentUserTaskQuery, EventCursor, Page, PrincipalKind, RequestId, RetryUserTaskCompletion,
-    RuntimeBindings, RuntimeError, SessionHandle, SessionId, SessionSnapshot, TaskActionReceipt,
-    UserTask, UserTaskAction, UserTaskCompletionRetryReceipt, UserTaskId, UserTaskSummary,
-    WorkflowEvent, WorkflowId, WorkflowInput, WorkflowInstanceId, WorkflowRunHandle,
-    WorkflowSignal, WorkflowSnapshot,
+    ApplicationProblem, CommandAck, EventCursor, PrincipalKind, RequestId, RuntimeBindings,
+    RuntimeError, SessionHandle, SessionId, SessionSnapshot, WorkflowEvent, WorkflowId,
+    WorkflowInput, WorkflowInstanceId, WorkflowRunHandle, WorkflowSignal, WorkflowSnapshot,
 };
 
 use kish_lingshu_runtime_contract::{AssetRef, AssetUpload};
@@ -447,64 +445,6 @@ impl HttpBinding {
             },
         )
         .await
-    }
-
-    fn application_task_url(&self, path: &str, query: &ApplicationTaskQuery) -> Result<Url, Error> {
-        let mut url = self.endpoint(path)?;
-        let mut pairs = url.query_pairs_mut();
-        if let Some(state) = &query.state {
-            pairs.append_pair("state", state.as_str());
-        }
-        if let Some(mode) = &query.mode {
-            pairs.append_pair("mode", mode.as_str());
-        }
-        if let Some(workflow_id) = query.workflow_id {
-            pairs.append_pair("workflow_id", &workflow_id.0.to_string());
-        }
-        if let Some(participant_user_id) = &query.participant_user_id {
-            pairs.append_pair("participant_user_id", participant_user_id);
-        }
-        if let Some(participant_state) = &query.participant_state {
-            pairs.append_pair("participant_state", participant_state.as_str());
-        }
-        if let Some(claimed_by) = &query.claimed_by {
-            pairs.append_pair("claimed_by", claimed_by);
-        }
-        if let Some(created_from) = query.created.created_from {
-            pairs.append_pair("created_from", &created_from.to_rfc3339());
-        }
-        if let Some(created_before) = query.created.created_before {
-            pairs.append_pair("created_before", &created_before.to_rfc3339());
-        }
-        pairs.append_pair("page", &query.pagination.page.to_string());
-        pairs.append_pair("page_size", &query.pagination.page_size.to_string());
-        drop(pairs);
-        Ok(url)
-    }
-
-    fn current_user_task_url(
-        &self,
-        path: &str,
-        query: &CurrentUserTaskQuery,
-    ) -> Result<Url, Error> {
-        let mut url = self.endpoint(path)?;
-        let mut pairs = url.query_pairs_mut();
-        if let Some(participant_state) = &query.participant_state {
-            pairs.append_pair("participant_state", participant_state.as_str());
-        }
-        if let Some(mode) = &query.mode {
-            pairs.append_pair("mode", mode.as_str());
-        }
-        if let Some(created_from) = query.created.created_from {
-            pairs.append_pair("created_from", &created_from.to_rfc3339());
-        }
-        if let Some(created_before) = query.created.created_before {
-            pairs.append_pair("created_before", &created_before.to_rfc3339());
-        }
-        pairs.append_pair("page", &query.pagination.page.to_string());
-        pairs.append_pair("page_size", &query.pagination.page_size.to_string());
-        drop(pairs);
-        Ok(url)
     }
 }
 
@@ -1169,6 +1109,124 @@ impl ProductBinding for HttpBinding {
         })
     }
 
+    async fn list_human_tasks(
+        &self,
+        instance: WorkflowInstanceId,
+        options: RequestOptions,
+    ) -> Result<Vec<HumanTaskSnapshot>, Error> {
+        let url = self.endpoint(&format!(
+            "openapi/workflow-instances/{}/human-tasks",
+            instance.0
+        ))?;
+        let body = Arc::from([]);
+        self.execute_json(
+            Method::GET,
+            url,
+            body,
+            &options,
+            ReplaySafety::Read,
+            None,
+            false,
+        )
+        .await
+    }
+    async fn get_human_task(
+        &self,
+        instance: WorkflowInstanceId,
+        task_id: String,
+        options: RequestOptions,
+    ) -> Result<HumanTaskSnapshot, Error> {
+        let task_id = encode_segment(&task_id);
+        let url = self.endpoint(&format!(
+            "openapi/workflow-instances/{}/human-tasks/{task_id}",
+            instance.0
+        ))?;
+        let body = Arc::from([]);
+        self.execute_json(
+            Method::GET,
+            url,
+            body,
+            &options,
+            ReplaySafety::Read,
+            None,
+            false,
+        )
+        .await
+    }
+    async fn human_task_command(
+        &self,
+        instance: WorkflowInstanceId,
+        task_id: String,
+        command: HumanTaskCommand,
+        options: RequestOptions,
+    ) -> Result<HumanTaskCommandReceipt, Error> {
+        let task_id = encode_segment(&task_id);
+        let url = self.endpoint(&format!(
+            "openapi/workflow-instances/{}/human-tasks/{task_id}/commands",
+            instance.0
+        ))?;
+        let body = self.encode_body(&command, options.request_id())?;
+        self.execute_json(
+            Method::POST,
+            url,
+            body,
+            &options,
+            ReplaySafety::NonIdempotentMutation,
+            None,
+            false,
+        )
+        .await
+    }
+    async fn human_task_command_status(
+        &self,
+        instance: WorkflowInstanceId,
+        task_id: String,
+        command: String,
+        options: RequestOptions,
+    ) -> Result<HumanTaskCommandStatus, Error> {
+        let task_id = encode_segment(&task_id);
+        let command = encode_segment(&command);
+        let url = self.endpoint(&format!(
+            "openapi/workflow-instances/{}/human-tasks/{task_id}/commands/{command}",
+            instance.0
+        ))?;
+        let body = Arc::from([]);
+        self.execute_json(
+            Method::GET,
+            url,
+            body,
+            &options,
+            ReplaySafety::Read,
+            None,
+            false,
+        )
+        .await
+    }
+    async fn retry_human_task(
+        &self,
+        instance: WorkflowInstanceId,
+        task_id: String,
+        command: String,
+        options: RequestOptions,
+    ) -> Result<HumanTaskCommandReceipt, Error> {
+        let task_id = encode_segment(&task_id);
+        let command = encode_segment(&command);
+        let url = self.endpoint(&format!(
+            "openapi/workflow-instances/{}/human-tasks/{task_id}/commands/{command}/retry",
+            instance.0
+        ))?;
+        let body = Arc::from([]);
+        self.execute_json(
+            Method::POST,
+            url,
+            body,
+            &options,
+            ReplaySafety::NonIdempotentMutation,
+            None,
+            false,
+        )
+        .await
+    }
     async fn ensure_schedule(
         &self,
         definition: kish_lingshu_event_dispatch_contract::ScheduleDefinition,
@@ -1552,165 +1610,6 @@ impl ProductBinding for HttpBinding {
         };
         Ok(Box::pin(stream))
     }
-
-    async fn list_application_tasks(
-        &self,
-        query: ApplicationTaskQuery,
-        options: RequestOptions,
-    ) -> Result<Page<UserTaskSummary>, Error> {
-        let url = self.application_task_url("openapi/user-tasks", &query)?;
-        self.execute_json(
-            Method::GET,
-            url,
-            Arc::from([]),
-            &options,
-            ReplaySafety::Read,
-            None,
-            false,
-        )
-        .await
-    }
-
-    async fn summarize_application_tasks(
-        &self,
-        query: ApplicationTaskQuery,
-        options: RequestOptions,
-    ) -> Result<ApplicationTaskSummary, Error> {
-        let url = self.application_task_url("openapi/user-tasks/summary", &query)?;
-        self.execute_json(
-            Method::GET,
-            url,
-            Arc::from([]),
-            &options,
-            ReplaySafety::Read,
-            None,
-            false,
-        )
-        .await
-    }
-
-    async fn get_application_task(
-        &self,
-        task_id: UserTaskId,
-        options: RequestOptions,
-    ) -> Result<UserTask, Error> {
-        let url = self.endpoint(&format!("openapi/user-tasks/{}", task_id.get()))?;
-        self.execute_json(
-            Method::GET,
-            url,
-            Arc::from([]),
-            &options,
-            ReplaySafety::Read,
-            None,
-            false,
-        )
-        .await
-    }
-
-    async fn retry_user_task_completion(
-        &self,
-        request: RetryUserTaskCompletion,
-        options: RequestOptions,
-    ) -> Result<UserTaskCompletionRetryReceipt, Error> {
-        let url = self.endpoint(&format!(
-            "openapi/user-tasks/{}/completion/retry",
-            request.task_id.get()
-        ))?;
-        let body = self.encode_body(&request, options.request_id())?;
-        self.execute_json(
-            Method::POST,
-            url,
-            body,
-            &options,
-            ReplaySafety::NonIdempotentMutation,
-            None,
-            false,
-        )
-        .await
-    }
-
-    async fn list_current_user_tasks(
-        &self,
-        query: CurrentUserTaskQuery,
-        options: RequestOptions,
-    ) -> Result<Page<UserTaskSummary>, Error> {
-        let url = self.current_user_task_url("api/user/user-tasks", &query)?;
-        self.execute_json(
-            Method::GET,
-            url,
-            Arc::from([]),
-            &options,
-            ReplaySafety::Read,
-            None,
-            false,
-        )
-        .await
-    }
-
-    async fn get_current_user_task(
-        &self,
-        task_id: UserTaskId,
-        options: RequestOptions,
-    ) -> Result<UserTask, Error> {
-        let url = self.endpoint(&format!("api/user/user-tasks/{}", task_id.get()))?;
-        self.execute_json(
-            Method::GET,
-            url,
-            Arc::from([]),
-            &options,
-            ReplaySafety::Read,
-            None,
-            false,
-        )
-        .await
-    }
-
-    async fn act_on_user_task(
-        &self,
-        action: UserTaskAction,
-        options: MutationOptions,
-    ) -> Result<TaskActionReceipt, Error> {
-        if &action.precondition().idempotency_key != options.idempotency_key() {
-            return Err(Error::contract(
-                "User Task action idempotency key does not match its mutation options",
-                Some(options.request().request_id().clone()),
-            ));
-        }
-        let task_id = action.precondition().task_id;
-        let (method, suffix, body) = match action {
-            UserTaskAction::Claim(request) => (
-                Method::POST,
-                "claim",
-                self.encode_body(&request, options.request().request_id())?,
-            ),
-            UserTaskAction::MarkRead(request) => (
-                Method::POST,
-                "read",
-                self.encode_body(&request, options.request().request_id())?,
-            ),
-            UserTaskAction::SaveDraft(request) => (
-                Method::PUT,
-                "draft",
-                self.encode_body(&request, options.request().request_id())?,
-            ),
-            UserTaskAction::Submit(request) => (
-                Method::POST,
-                "submit",
-                self.encode_body(&request, options.request().request_id())?,
-            ),
-        };
-        let url = self.endpoint(&format!("api/user/user-tasks/{}/{suffix}", task_id.get()))?;
-        self.execute_json(
-            method,
-            url,
-            body,
-            options.request(),
-            ReplaySafety::IdempotentMutation,
-            Some(options.idempotency_key().as_str()),
-            false,
-        )
-        .await
-    }
 }
 
 pub(crate) fn decode_application_error(
@@ -1904,4 +1803,8 @@ mod tests {
             }) if request_id.as_ref() == "client-request-4"
         ));
     }
+}
+
+fn encode_segment(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }

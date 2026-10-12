@@ -357,44 +357,28 @@ impl ServiceRegistry {
             ));
         }
         match (
-            &operation.definition.user_task_completion,
+            &operation.definition.human_task,
             &invocation.context.invocation,
         ) {
             (Some(definition), InvocationRole::Call(call)) => {
-                let completion = crate::user_task::completion::CompletionContext::from_service(
-                    &invocation.context,
-                )?;
-                let wire = call.user_task_completion.as_ref().unwrap();
-                if completion.task().task_type != definition.task_type
-                    || wire.submission != invocation.input
-                    || wire.contract_version
-                        != kish_lingshu_runtime_contract::USER_TASK_COMPLETION_CONTRACT_VERSION
-                    || wire.actor_user_id.is_empty()
-                    || wire.invocation_id.is_empty()
-                    || wire.task.staged_revision.get()
-                        != wire.task.expected_revision.get().saturating_add(1)
-                    || wire.invocation_deadline.timestamp_millis() < invocation.context.deadline_ms
-                    || call.workflow.as_ref().is_none_or(|w| {
-                        w.workflow_id != wire.workflow.workflow_id.0.to_string()
-                            || w.workflow_instance_id
-                                != wire.workflow.workflow_instance_id.0.to_string()
-                            || w.node_id != wire.workflow.flow_node_id
-                    })
-                {
-                    return Err(ServiceError::rejected(
-                        "invalid_completion_context",
-                        "Task or Workflow binding mismatch",
-                    ));
-                }
+                let wire = call.human_task.as_ref().ok_or_else(|| {
+                    ServiceError::rejected("invalid_human_context", "Missing trusted human context")
+                })?;
+                wire.validate(&invocation.context, call, definition)?;
             }
-            (None, InvocationRole::Call(call)) if call.user_task_completion.is_none() => {}
-            (None, InvocationRole::Event(_)) => {}
-            _ => {
+            (None, InvocationRole::Call(call)) if call.human_task.is_some() => {
                 return Err(ServiceError::rejected(
-                    "invalid_completion_role",
-                    "Completion context requires its declared operation",
+                    "invalid_human_role",
+                    "Human context requires a declared lifecycle operation",
+                ));
+            }
+            (Some(_), _) => {
+                return Err(ServiceError::rejected(
+                    "invalid_human_role",
+                    "Human handler requires a Call",
                 ))
             }
+            _ => {}
         }
         if !operation.input.is_valid(&invocation.input) {
             return Err(ServiceError::rejected(

@@ -3,12 +3,12 @@
 use std::{fs, process::Command};
 
 #[test]
-fn completion_macros_work_when_the_sdk_dependency_is_renamed() {
+fn human_macros_work_when_the_sdk_dependency_is_renamed() {
     let fixture = tempfile::tempdir().unwrap();
     let sdk_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let manifest = format!(
         r#"[package]
-name = "renamed-completion-sdk"
+name = "renamed-human-sdk"
 version = "0.1.0"
 edition = "2021"
 
@@ -28,8 +28,8 @@ serde = {{ version = "1", features = ["derive"] }}
         r#"
 use std::sync::Arc;
 
-use lingshu::user_task::completion::{
-    CompletionContext, CompletionResult,
+use lingshu::human_task::{
+    HumanTaskContext, HumanTaskResult,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -44,19 +44,19 @@ struct Handlers;
 
 #[lingshu::lingshu_service(key="reviews")]
 impl Handlers {
-    #[user_task_completion_handler(task_type = "fixture.approval.v1", operation="complete", version="v1", modes=["sync","async"], idempotent=true)]
+    #[human_task_handler(task_type = "fixture.approval.v1", action="complete", node_kinds=["todo"], operation="complete", version="v1", modes=["sync","async"], idempotent=true)]
     async fn complete(
         &self,
-        _context: CompletionContext,
+        _context: HumanTaskContext,
         submission: Submission,
-    ) -> CompletionResult<Output> {
+    ) -> HumanTaskResult<Output> {
         Ok(Output { applied: submission.approved })
     }
 }
 
 fn main() {
     let manifest = lingshu::services::export_manifest("fixture-app").unwrap();
-    assert_eq!(manifest.services[0].operations[0].user_task_completion.as_ref().unwrap().task_type, "fixture.approval.v1");
+    assert_eq!(manifest.services[0].operations[0].human_task.as_ref().unwrap().task_type, "fixture.approval.v1");
     let mut builder = lingshu::services::ServiceRegistryBuilder::new(manifest).unwrap();
     Arc::new(Handlers).bind_lingshu_services(&mut builder).unwrap();
     assert_eq!(builder.build().unwrap().capabilities().len(), 1);
@@ -65,7 +65,7 @@ fn main() {
     )
     .unwrap();
 
-    let target_dir = sdk_path.join("../../target/renamed-downstream-completion");
+    let target_dir = sdk_path.join("../../target/renamed-downstream-human");
     let output = Command::new(env!("CARGO"))
         .args(["run", "--quiet", "--offline", "--manifest-path"])
         .arg(fixture.path().join("Cargo.toml"))
@@ -74,7 +74,7 @@ fn main() {
         .unwrap();
     assert!(
         output.status.success(),
-        "renamed downstream completion crate failed to link and run:\n{}",
+        "renamed downstream human crate failed to link and run:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
 }

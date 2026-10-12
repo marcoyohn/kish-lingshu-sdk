@@ -194,20 +194,57 @@ pub enum CallRegistrationRejection {
 mod tests {
     use super::*;
     fn declaration() -> CallDeclaration {
-        CallDeclaration { node_id: "call".into(), maximum_in_flight: 8, lane_count: 1,
-            capabilities: vec![InstanceCapability { operation: super::super::OperationRef {service_key:"orders".into(),operation_key:"complete".into(),version:"v1".into(),contract_digest:"a".repeat(64)},call:true,events:Default::default()}] }
+        CallDeclaration {
+            node_id: "call".into(),
+            maximum_in_flight: 8,
+            lane_count: 1,
+            capabilities: vec![InstanceCapability {
+                operation: super::super::OperationRef {
+                    service_key: "orders".into(),
+                    operation_key: "complete".into(),
+                    version: "v1".into(),
+                    contract_digest: "a".repeat(64),
+                },
+                call: true,
+                events: Default::default(),
+            }],
+        }
     }
     #[test]
     fn declaration_is_bounded_and_cannot_select_authority_or_route_destinations() {
-        let initial = declaration(); initial.validate().unwrap();
-        let request = CallRegistrationControl {call_registration:CallRegistrationProtocol::V1,command:CallRegistrationCommand::Declare {operation_id:"once".into(),previous_connection_epoch:None,expected_revision:None,declaration:initial}};
+        let initial = declaration();
+        initial.validate().unwrap();
+        let request = CallRegistrationControl {
+            call_registration: CallRegistrationProtocol::V1,
+            command: CallRegistrationCommand::Declare {
+                operation_id: "once".into(),
+                previous_connection_epoch: None,
+                expected_revision: None,
+                declaration: initial,
+            },
+        };
         request.validate().unwrap();
-        for field in ["application_id","connection_epoch","certificate_identity","endpoint","generation"] {
-            let mut value=serde_json::to_value(&request).unwrap();value["command"][field]=serde_json::json!("forged");
+        for field in [
+            "application_id",
+            "connection_epoch",
+            "certificate_identity",
+            "endpoint",
+            "generation",
+        ] {
+            let mut value = serde_json::to_value(&request).unwrap();
+            value["command"][field] = serde_json::json!("forged");
             assert!(serde_json::from_value::<CallRegistrationControl>(value).is_err());
         }
-        for lanes in [0,5] {let mut d=declaration();d.lane_count=lanes;assert!(d.validate().is_err());}
-        let mut d=declaration();d.capabilities.push(d.capabilities[0].clone());assert!(d.validate().is_err());
-        let mut d=declaration();d.capabilities[0].operation.contract_digest="invalid".into();assert!(d.validate().is_err());
+        for lanes in [0, 5] {
+            let mut d = declaration();
+            d.lane_count = lanes;
+            assert!(d.validate().is_err());
+        }
+        let mut d = declaration();
+        d.capabilities.push(d.capabilities[0].clone());
+        assert!(d.validate().is_err());
+        let mut d = declaration();
+        d.capabilities[0].operation.contract_digest = "invalid".into();
+        assert!(d.validate().is_err());
     }
 }

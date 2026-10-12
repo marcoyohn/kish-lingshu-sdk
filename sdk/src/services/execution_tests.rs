@@ -105,7 +105,7 @@ pub(crate) async fn fixture(capacity: u32) -> Fixture {
             service_key: "test".into(),
             description: String::new(),
             operations: vec![OperationDefinition {
-                user_task_completion: None,
+                human_task: None,
                 operation_key: "run".into(),
                 version: "v1".into(),
                 description: String::new(),
@@ -198,7 +198,7 @@ pub(crate) fn invocation(f: &Fixture, mode: CallMode, input: Value) -> ServiceIn
             deadline_ms: chrono::Utc::now().timestamp_millis() + 5000,
             trace_id: None,
             invocation: InvocationRole::Call(CallContext {
-                user_task_completion: None,
+                human_task: None,
                 call_id: "call-one".into(),
                 attempt: 1,
                 caller: "workflow".into(),

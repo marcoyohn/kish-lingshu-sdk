@@ -18,13 +18,14 @@ mod service_budget;
 
 pub mod assets;
 pub mod event_dispatch;
+#[cfg(feature = "service-manifest")]
+pub mod human_task;
 #[cfg(feature = "service-auth-core")]
 pub mod service_auth;
 #[cfg(feature = "service-channel")]
 pub mod service_channel;
 #[cfg(feature = "service-manifest")]
 pub mod services;
-pub mod user_task;
 pub mod workflow;
 pub mod workspaces;
 #[cfg(feature = "service-auth-core")]
@@ -51,8 +52,10 @@ pub use kish_lingshu_sdk_macros::{event_job, EventPayload};
 
 #[cfg(feature = "service-manifest")]
 pub use kish_lingshu_sdk_macros::{
-    lingshu_service, service_call, service_event, user_task_completion_handler,
+    human_task_handler, lingshu_service, service_call, service_event,
 };
 
 #[cfg(feature = "service-http")]
 pub mod provider;
+
+pub mod human_tasks;

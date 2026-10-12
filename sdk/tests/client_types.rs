@@ -26,12 +26,12 @@ fn context_factory(principal: PrincipalKind) -> TrustedContextFactory {
 fn assert_service_capabilities(client: &Client<ServicePrincipal>) {
     let _ = client.workflows();
     let _ = client.event_dispatch();
-    let _ = client.user_tasks();
+    let _ = client.human_tasks();
 }
 
 fn assert_user_capabilities(client: &Client<UserPrincipal>) {
     let _ = client.workflows();
-    let _ = client.user_tasks();
+    let _ = client.human_tasks();
 }
 
 #[test]

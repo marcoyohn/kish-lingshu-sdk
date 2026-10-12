@@ -98,7 +98,7 @@ pub struct OperationDefinition {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub action: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_task_completion: Option<UserTaskCompletionDefinition>,
+    pub human_task: Option<crate::HumanTaskDefinition>,
     /// Effectful operations must implement persistent business idempotency.
     pub idempotent: bool,
     pub input_schema: Value,
@@ -111,11 +111,6 @@ pub struct OperationDefinition {
 }
 
 /// A Call specialization; it does not introduce an instance registration role.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UserTaskCompletionDefinition {
-    pub task_type: String,
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -158,7 +153,7 @@ pub struct WorkflowCallTarget {
 #[serde(deny_unknown_fields)]
 pub struct CallContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_task_completion: Option<Box<crate::UserTaskCompletionInvocationV1>>,
+    pub human_task: Option<Box<crate::HumanTaskInvocation>>,
     pub call_id: String,
     pub attempt: u32,
     pub caller: String,
@@ -395,7 +390,7 @@ impl OperationDefinition {
         if !valid_key(&self.operation_key)
             || !valid_key(&self.version)
             || (!self.action.is_empty() && !valid_key(&self.action))
-            || (self.action.is_empty() && self.user_task_completion.is_none())
+            || (self.action.is_empty() && self.human_task.is_none())
             || self.call.is_none() && self.events.is_empty()
         {
             return Err(ServiceError::rejected(
@@ -403,11 +398,13 @@ impl OperationDefinition {
                 "Operation identity, action and at least one role are required",
             ));
         }
-        if let Some(completion) = &self.user_task_completion {
-            if !valid_key(&completion.task_type) || self.call.is_none() || !self.events.is_empty() {
+
+        if let Some(human) = &self.human_task {
+            human.validate()?;
+            if !self.idempotent || self.call.is_none() || !self.events.is_empty() {
                 return Err(ServiceError::rejected(
-                    "invalid_completion_binding",
-                    "User Task completion requires a task type and Call-only operation",
+                    "invalid_human_binding",
+                    "Human lifecycle operations require an idempotent Call-only binding",
                 ));
             }
         }
@@ -470,8 +467,21 @@ impl ServiceManifest {
                 ));
             }
             let mut operations = BTreeSet::new();
+            let mut human_handlers = BTreeSet::new();
             for operation in &service.operations {
                 operation.validate()?;
+                if let Some(human) = &operation.human_task {
+                    for kind in &human.node_kinds {
+                        if !human_handlers.insert((
+                            &human.task_type,
+                            human.action,
+                            *kind,
+                            &operation.version,
+                        )) {
+                            return Err(ServiceError::rejected("duplicate_human_handler", "One lifecycle Handler per task type, kind, action and version is required"));
+                        }
+                    }
+                }
                 if !operations.insert((&operation.operation_key, &operation.version)) {
                     return Err(ServiceError::rejected(
                         "duplicate_operation",
@@ -589,7 +599,7 @@ pub struct ServiceInstanceTarget {
 }
 
 /// Contract export/validation must never fetch a URL or read a local file.
-fn local_schema_refs(value: &Value) -> bool {
+pub(crate) fn local_schema_refs(value: &Value) -> bool {
     match value {
         Value::Object(fields) => fields.iter().all(|(key, value)| {
             (key != "$ref" || value.as_str().is_some_and(|r| r.starts_with('#')))
@@ -600,29 +610,29 @@ fn local_schema_refs(value: &Value) -> bool {
     }
 }
 
-/// Direct, immutable User Task completion binding saved with the task.
+/// Immutable native Operation reference and budget for one human lifecycle Hook.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct UserTaskServiceBinding {
+pub struct HumanTaskHookBinding {
     #[serde(flatten)]
     pub operation: OperationRef,
-    #[serde(default = "completion_default_mode")]
+    #[serde(default = "human_default_mode")]
     pub mode: CallMode,
-    #[serde(default = "completion_default_deadline")]
+    #[serde(default = "human_default_deadline")]
     pub deadline_ms: u64,
-    #[serde(default = "completion_default_attempts")]
+    #[serde(default = "human_default_attempts")]
     pub maximum_attempts: u32,
 }
-fn completion_default_mode() -> CallMode {
+fn human_default_mode() -> CallMode {
     CallMode::Async
 }
-fn completion_default_deadline() -> u64 {
+fn human_default_deadline() -> u64 {
     300_000
 }
-fn completion_default_attempts() -> u32 {
+fn human_default_attempts() -> u32 {
     3
 }
-impl UserTaskServiceBinding {
+impl HumanTaskHookBinding {
     pub fn validate(&self) -> Result<(), ServiceError> {
         if !valid_key(&self.operation.service_key)
             || !valid_key(&self.operation.operation_key)
@@ -639,8 +649,8 @@ impl UserTaskServiceBinding {
             || self.maximum_attempts > 8
         {
             return Err(ServiceError::rejected(
-                "invalid_completion_binding",
-                "Completion requires a pinned Operation and bounded execution budget",
+                "invalid_human_binding",
+                "Human Hook requires a pinned Operation and bounded execution budget",
             ));
         }
         Ok(())

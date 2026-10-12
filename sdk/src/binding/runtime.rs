@@ -4,15 +4,14 @@ use kish_lingshu_runtime_contract::WorkspaceApprovalMode;
 use async_trait::async_trait;
 use futures::StreamExt;
 use kish_lingshu_event_dispatch_contract::{EventId, EventRecord, PublishEvent, PublishReceipt};
+use kish_lingshu_runtime_contract::human_task::*;
 use kish_lingshu_runtime_contract::{
-    ApplicationProblem, ApplicationTaskQuery, ApplicationTaskSummary, CommandAck,
-    CreateSessionRequest, CurrentUserTaskQuery, LoadSessionRequest, Page, ProblemCode,
-    ProductRuntimeFacade, RequestContext, RetryUserTaskCompletion, RuntimeBindings, RuntimeError,
-    RuntimeErrorCode, SessionHandle, SessionId, SessionSnapshot, SignalWorkflowRequest,
-    StartWorkflowRequest, SubscribeWorkflowRequest, TaskActionReceipt, TerminateWorkflowRequest,
-    TrustedContextFactory, UserTask, UserTaskAction, UserTaskCompletionRetryReceipt, UserTaskId,
-    UserTaskSummary, WorkflowContext, WorkflowId, WorkflowInput, WorkflowInstanceId,
-    WorkflowRunHandle, WorkflowSnapshot, WorkflowSnapshotRequest,
+    ApplicationProblem, CommandAck, CreateSessionRequest, LoadSessionRequest, ProblemCode,
+    ProductRuntimeFacade, RequestContext, RuntimeBindings, RuntimeError, RuntimeErrorCode,
+    SessionHandle, SessionId, SessionSnapshot, SignalWorkflowRequest, StartWorkflowRequest,
+    SubscribeWorkflowRequest, TerminateWorkflowRequest, TrustedContextFactory, WorkflowContext,
+    WorkflowId, WorkflowInput, WorkflowInstanceId, WorkflowRunHandle, WorkflowSnapshot,
+    WorkflowSnapshotRequest,
 };
 
 use kish_lingshu_runtime_contract::{AssetRef, AssetUpload};
@@ -223,6 +222,83 @@ impl ProductBinding for ProductRuntimeBinding {
             .map_err(|error| runtime_error(error, options.request_id().clone()))
     }
 
+    async fn list_human_tasks(
+        &self,
+        instance: WorkflowInstanceId,
+        options: RequestOptions,
+    ) -> Result<Vec<HumanTaskSnapshot>, Error> {
+        self.facade
+            .human_tasks()
+            .list(self.request_context(&options)?, instance)
+            .await
+            .map_err(application_error)
+    }
+    async fn get_human_task(
+        &self,
+        instance: WorkflowInstanceId,
+        task_id: String,
+        options: RequestOptions,
+    ) -> Result<HumanTaskSnapshot, Error> {
+        self.facade
+            .human_tasks()
+            .get(self.request_context(&options)?, instance, task_id)
+            .await
+            .map_err(application_error)
+    }
+    async fn human_task_command(
+        &self,
+        instance: WorkflowInstanceId,
+        task_id: String,
+        command: HumanTaskCommand,
+        options: RequestOptions,
+    ) -> Result<HumanTaskCommandReceipt, Error> {
+        self.facade
+            .human_tasks()
+            .command(
+                self.request_context(&options)?,
+                instance,
+                task_id,
+                command,
+            )
+            .await
+            .map_err(application_error)
+    }
+    async fn human_task_command_status(
+        &self,
+        instance: WorkflowInstanceId,
+        task_id: String,
+        command: String,
+        options: RequestOptions,
+    ) -> Result<HumanTaskCommandStatus, Error> {
+        self.facade
+            .human_tasks()
+            .command_status(
+                self.request_context(&options)?,
+                instance,
+                task_id,
+                command,
+            )
+            .await
+            .map_err(application_error)
+    }
+    async fn retry_human_task(
+        &self,
+        instance: WorkflowInstanceId,
+        task_id: String,
+        command: String,
+        options: RequestOptions,
+    ) -> Result<HumanTaskCommandReceipt, Error> {
+        self.facade
+            .human_tasks()
+            .retry(
+                self.request_context(&options)?,
+                instance,
+                task_id,
+                command,
+            )
+            .await
+            .map_err(application_error)
+    }
     async fn ensure_schedule(
         &self,
         _definition: kish_lingshu_event_dispatch_contract::ScheduleDefinition,
@@ -395,104 +471,6 @@ impl ProductBinding for ProductRuntimeBinding {
         Ok(Box::pin(stream.map(move |item| {
             item.map_err(|error| runtime_error(error, request_id.clone()))
         })))
-    }
-
-    async fn list_application_tasks(
-        &self,
-        query: ApplicationTaskQuery,
-        options: RequestOptions,
-    ) -> Result<Page<UserTaskSummary>, Error> {
-        let context = self.request_context(&options)?;
-        self.facade
-            .user_tasks()
-            .list_application(context, query)
-            .await
-            .map_err(application_error)
-    }
-
-    async fn summarize_application_tasks(
-        &self,
-        query: ApplicationTaskQuery,
-        options: RequestOptions,
-    ) -> Result<ApplicationTaskSummary, Error> {
-        let context = self.request_context(&options)?;
-        self.facade
-            .user_tasks()
-            .summarize_application(context, query)
-            .await
-            .map_err(application_error)
-    }
-
-    async fn get_application_task(
-        &self,
-        task_id: UserTaskId,
-        options: RequestOptions,
-    ) -> Result<UserTask, Error> {
-        let context = self.request_context(&options)?;
-        self.facade
-            .user_tasks()
-            .get_application(context, task_id)
-            .await
-            .map_err(application_error)
-    }
-
-    async fn retry_user_task_completion(
-        &self,
-        request: RetryUserTaskCompletion,
-        options: RequestOptions,
-    ) -> Result<UserTaskCompletionRetryReceipt, Error> {
-        let context = self.request_context(&options)?;
-        self.facade
-            .user_tasks()
-            .retry_completion(context, request)
-            .await
-            .map_err(application_error)
-    }
-
-    async fn list_current_user_tasks(
-        &self,
-        query: CurrentUserTaskQuery,
-        options: RequestOptions,
-    ) -> Result<Page<UserTaskSummary>, Error> {
-        let context = self.request_context(&options)?;
-        self.facade
-            .user_tasks()
-            .list_mine(context, query)
-            .await
-            .map_err(application_error)
-    }
-
-    async fn get_current_user_task(
-        &self,
-        task_id: UserTaskId,
-        options: RequestOptions,
-    ) -> Result<UserTask, Error> {
-        let context = self.request_context(&options)?;
-        self.facade
-            .user_tasks()
-            .get_mine(context, task_id)
-            .await
-            .map_err(application_error)
-    }
-
-    async fn act_on_user_task(
-        &self,
-        action: UserTaskAction,
-        options: MutationOptions,
-    ) -> Result<TaskActionReceipt, Error> {
-        if &action.precondition().idempotency_key != options.idempotency_key() {
-            return Err(Error::contract(
-                "User Task action idempotency key does not match its mutation options",
-                Some(options.request().request_id().clone()),
-            ));
-        }
-        let context = self
-            .request_context_with_idempotency(options.request(), Some(options.idempotency_key()))?;
-        self.facade
-            .user_tasks()
-            .act(context, action)
-            .await
-            .map_err(application_error)
     }
 }
 

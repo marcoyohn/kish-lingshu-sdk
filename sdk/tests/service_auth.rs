@@ -852,7 +852,7 @@ async fn protects_existing_event_and_task_adapters_before_json_handling() {
         "services": [{"service_key":"reviews", "description":"", "operations":[{
             "operation_key":"complete", "version":"v1", "description":"", "action":"",
             "idempotent":true, "input_schema":{}, "output_schema":{}, "error_schema":{},
-            "user_task_completion":{"task_type":"review"},
+            "action":"review.complete",
             "call":{"modes":["sync","async"],"maximum_concurrency":2,"timeout_ms":30000},
             "events":[]
         }]}]

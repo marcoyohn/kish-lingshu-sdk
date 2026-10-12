@@ -25,11 +25,11 @@ source commit recorded in `sdk-source.json`.
 
 | Package | Purpose |
 | --- | --- |
-| `kish-lingshu-sdk` | Client, event publication/consumption, workflow and user task APIs |
+| `kish-lingshu-sdk` | Client, event publication/consumption, workflow and human task APIs |
 | `kish-lingshu-sdk-macros` | SDK declaration macros |
 | `kish-lingshu-foundation-contract` | Shared contract values |
 | `kish-lingshu-event-dispatch-contract` | Event Dispatch contracts |
-| `kish-lingshu-runtime-contract` | Workflow and User Task contracts |
+| `kish-lingshu-runtime-contract` | Workflow, human task commands and lifecycle contracts |
 | `kish-lingshu-event-publication-sqlx` | Optional SQLx producer journal and its MySQL/SQLite migrations |
 
 All six packages declare Apache-2.0 in `Cargo.toml`; the reviewed license text is
@@ -55,6 +55,24 @@ immutable. `main` contains the latest published SDK snapshot. Only maintainers a
 Local Workspace/Sandbox execution, permission journals and CLI presentation belong
 to the source product and are not part of the public SDK export.
 
+
+### v0.8.0
+
+Breaking release: workflow user tasks and draft nodes integrate with external
+business services through typed lifecycle Hooks. Use `client.human_tasks()` for
+workflow commands and `#[human_task_handler(...)]` with `HumanTaskContext` and
+`HumanTaskResult` to implement business Hooks. Wire routes use
+`/openapi/workflow-instances/{instance_id}/human-tasks/...`; identifiers are
+`task_id`, `task_type`, and `task_revision`.
+
+The local task list/detail API, HTML task rendering, and `user-task-completion`
+feature are removed without compatibility aliases. Business applications own
+inboxes, draft data, assignment, and authorization; Lingshu owns workflow
+progression. See [the approval/draft example](sdk/examples/approval_draft.rs).
+SDK/macros/SQLx journal are v0.8.0, Runtime contracts are v0.4.0, and unchanged
+Foundation/Event Dispatch contracts remain v0.3.1. Select every package from the
+same public commit or tag. Upgrade the Lingshu server to the matching human task
+API implementation before using these new client commands.
 
 ### v0.5.1
 
@@ -106,6 +124,11 @@ execution readiness; each invocation still checks current permission and capacit
 | `event-consumer-zenoh` | Directed Consumer execution chosen by Lingshu Dispatch |
 | `event-publication-zenoh` | PublishEvent on the managed native control channel |
 | `service-http`, `event-consumer-http` | Explicit inbound HTTP compatibility adapters |
+
+The reviewed [approval draft example](sdk/examples/approval_draft.rs) starts a
+workflow from an already committed business intent. It pins the published
+definition and reuses the stable start key when recovering a lost response.
+The example is included through an explicit file allowlist.
 
 The reviewed [native example](sdk/examples/native_application.rs) keeps existing
 Service/Event annotations and shares one execution budget across Call and Consumer.

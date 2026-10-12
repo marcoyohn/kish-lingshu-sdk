@@ -1,12 +1,10 @@
 use std::sync::Arc;
 
 use crate::{
-    ApplicationProblem, ApplicationResult, ApplicationTaskQuery, ApplicationTaskSummary, AssetRef,
-    AssetStore, AssetUpload, ConversationService, CurrentUserTaskQuery, EventPublisher,
-    IdempotencyKey, Page, RequestContext, RouteWorkflowEventRequest, RouteWorkflowEventResponse,
-    RuntimeError, RuntimeErrorCode, RuntimeResult, SessionDirectory, SessionId, SessionQuery,
-    SessionSnapshot, SessionUpdate, TaskActionReceipt, UserTask, UserTaskAction, UserTaskId,
-    UserTaskRuntime, UserTaskSummary, WorkflowContext, WorkflowDirectory,
+    ApplicationProblem, ApplicationResult, AssetRef, AssetStore, AssetUpload, ConversationService,
+    EventPublisher, IdempotencyKey, RequestContext, RouteWorkflowEventRequest,
+    RouteWorkflowEventResponse, RuntimeError, RuntimeErrorCode, RuntimeResult, SessionDirectory,
+    SessionId, SessionQuery, SessionSnapshot, SessionUpdate, WorkflowContext, WorkflowDirectory,
     WorkflowEventRouteService, WorkflowId, WorkflowQuery, WorkflowRouteCallbackToken,
     WorkflowRuntime, WorkflowSummary,
 };
@@ -22,7 +20,7 @@ pub struct ProductRuntimeFacade {
     assets: Arc<dyn AssetStore>,
     workflow_event_routes: Arc<dyn WorkflowEventRouteService>,
     event_publisher: Arc<dyn EventPublisher>,
-    user_tasks: Arc<dyn UserTaskRuntime>,
+    human_tasks: Arc<dyn crate::WorkflowHumanTaskRuntime>,
 }
 
 impl ProductRuntimeFacade {
@@ -38,7 +36,7 @@ impl ProductRuntimeFacade {
             assets: Arc::new(UnsupportedAssetStore),
             workflow_event_routes: Arc::new(UnsupportedWorkflowEventRouteService),
             event_publisher: Arc::new(UnsupportedEventPublisher),
-            user_tasks: Arc::new(UnsupportedUserTaskRuntime),
+            human_tasks: Arc::new(UnsupportedWorkflowHumanTasks),
         }
     }
 
@@ -68,8 +66,16 @@ impl ProductRuntimeFacade {
         &self.event_publisher
     }
 
-    pub fn user_tasks(&self) -> &Arc<dyn UserTaskRuntime> {
-        &self.user_tasks
+    pub fn human_tasks(&self) -> &Arc<dyn crate::WorkflowHumanTaskRuntime> {
+        &self.human_tasks
+    }
+
+    pub fn with_human_tasks(
+        mut self,
+        human_tasks: Arc<dyn crate::WorkflowHumanTaskRuntime>,
+    ) -> Self {
+        self.human_tasks = human_tasks;
+        self
     }
 
     pub fn with_product_services(
@@ -96,11 +102,6 @@ impl ProductRuntimeFacade {
         self.event_publisher = event_publisher;
         self
     }
-
-    pub fn with_user_tasks(mut self, user_tasks: Arc<dyn UserTaskRuntime>) -> Self {
-        self.user_tasks = user_tasks;
-        self
-    }
 }
 
 fn unsupported<T>() -> RuntimeResult<T> {
@@ -111,6 +112,60 @@ fn unsupported<T>() -> RuntimeResult<T> {
 }
 
 struct UnsupportedSessionDirectory;
+
+struct UnsupportedWorkflowHumanTasks;
+#[async_trait]
+impl crate::WorkflowHumanTaskRuntime for UnsupportedWorkflowHumanTasks {
+    async fn list(
+        &self,
+        _: RequestContext,
+        _: crate::WorkflowInstanceId,
+    ) -> ApplicationResult<Vec<crate::HumanTaskSnapshot>> {
+        Err(unsupported_human_task())
+    }
+    async fn get(
+        &self,
+        _: RequestContext,
+        _: crate::WorkflowInstanceId,
+        _: String,
+    ) -> ApplicationResult<crate::HumanTaskSnapshot> {
+        Err(unsupported_human_task())
+    }
+    async fn command(
+        &self,
+        _: RequestContext,
+        _: crate::WorkflowInstanceId,
+        _: String,
+        _: crate::HumanTaskCommand,
+    ) -> ApplicationResult<crate::HumanTaskCommandReceipt> {
+        Err(unsupported_human_task())
+    }
+    async fn command_status(
+        &self,
+        _: RequestContext,
+        _: crate::WorkflowInstanceId,
+        _: String,
+        _: String,
+    ) -> ApplicationResult<crate::HumanTaskCommandStatus> {
+        Err(unsupported_human_task())
+    }
+    async fn retry(
+        &self,
+        _: RequestContext,
+        _: crate::WorkflowInstanceId,
+        _: String,
+        _: String,
+    ) -> ApplicationResult<crate::HumanTaskCommandReceipt> {
+        Err(unsupported_human_task())
+    }
+}
+fn unsupported_human_task() -> crate::ApplicationProblem {
+    crate::ApplicationProblem::new(
+        crate::ProblemCode::known(crate::UNSUPPORTED_PROBLEM),
+        "workflow human tasks are not available",
+        "unsupported",
+    )
+}
 #[async_trait]
 impl SessionDirectory for UnsupportedSessionDirectory {
     async fn list(
@@ -213,66 +268,6 @@ impl EventPublisher for UnsupportedEventPublisher {
     }
 }
 
-struct UnsupportedUserTaskRuntime;
-#[async_trait]
-impl UserTaskRuntime for UnsupportedUserTaskRuntime {
-    async fn list_application(
-        &self,
-        context: RequestContext,
-        _: ApplicationTaskQuery,
-    ) -> ApplicationResult<Page<UserTaskSummary>> {
-        unsupported_application(&context)
-    }
-
-    async fn summarize_application(
-        &self,
-        context: RequestContext,
-        _: ApplicationTaskQuery,
-    ) -> ApplicationResult<ApplicationTaskSummary> {
-        unsupported_application(&context)
-    }
-
-    async fn get_application(
-        &self,
-        context: RequestContext,
-        _: UserTaskId,
-    ) -> ApplicationResult<UserTask> {
-        unsupported_application(&context)
-    }
-
-    async fn retry_completion(
-        &self,
-        context: RequestContext,
-        _: crate::RetryUserTaskCompletion,
-    ) -> ApplicationResult<crate::UserTaskCompletionRetryReceipt> {
-        unsupported_application(&context)
-    }
-
-    async fn list_mine(
-        &self,
-        context: RequestContext,
-        _: CurrentUserTaskQuery,
-    ) -> ApplicationResult<Page<UserTaskSummary>> {
-        unsupported_application(&context)
-    }
-
-    async fn get_mine(
-        &self,
-        context: RequestContext,
-        _: UserTaskId,
-    ) -> ApplicationResult<UserTask> {
-        unsupported_application(&context)
-    }
-
-    async fn act(
-        &self,
-        context: RequestContext,
-        _: UserTaskAction,
-    ) -> ApplicationResult<TaskActionReceipt> {
-        unsupported_application(&context)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -288,20 +283,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn optional_event_and_user_task_ports_return_the_common_unsupported_problem() {
+    async fn optional_event_ports_return_the_common_unsupported_problem() {
         let facade = facade();
         let event_error = facade
             .event_publisher()
             .get(context(), EventId::new(1).unwrap())
             .await
             .unwrap_err();
-        let task_error = facade
-            .user_tasks()
-            .list_application(context(), ApplicationTaskQuery::default())
-            .await
-            .unwrap_err();
 
-        for error in [event_error, task_error] {
+        for error in [event_error] {
             assert_eq!(error.code.as_str(), UNSUPPORTED_PROBLEM);
             assert_eq!(error.request_id.as_ref(), "runtime-contract-request");
             assert!(!error.retryable);

@@ -1,5 +1,5 @@
 //! Private adapter implementations shared by public domain handles.
-use kish_lingshu_runtime_contract::WorkspaceApprovalMode;
+use kish_lingshu_runtime_contract::{human_task::*, WorkspaceApprovalMode};
 
 use std::{pin::Pin, sync::Arc};
 
@@ -7,11 +7,8 @@ use async_trait::async_trait;
 use futures::Stream;
 use kish_lingshu_event_dispatch_contract::{EventId, EventRecord, PublishEvent, PublishReceipt};
 use kish_lingshu_runtime_contract::{
-    ApplicationTaskQuery, ApplicationTaskSummary, CommandAck, CurrentUserTaskQuery, EventCursor,
-    Page, RetryUserTaskCompletion, RuntimeBindings, SessionHandle, SessionId, SessionSnapshot,
-    TaskActionReceipt, UserTask, UserTaskAction, UserTaskCompletionRetryReceipt, UserTaskId,
-    UserTaskSummary, WorkflowEvent, WorkflowId, WorkflowInput, WorkflowInstanceId,
-    WorkflowSnapshot,
+    CommandAck, EventCursor, RuntimeBindings, SessionHandle, SessionId, SessionSnapshot,
+    WorkflowEvent, WorkflowId, WorkflowInput, WorkflowInstanceId, WorkflowSnapshot,
 };
 
 use kish_lingshu_runtime_contract::{AssetRef, AssetUpload};
@@ -45,6 +42,38 @@ pub(crate) type WorkflowEventStream =
 /// principal, while construction selects HTTP or an in-process runtime.
 #[async_trait]
 pub(crate) trait ProductBinding: Send + Sync {
+    async fn list_human_tasks(
+        &self,
+        instance: WorkflowInstanceId,
+        options: RequestOptions,
+    ) -> Result<Vec<HumanTaskSnapshot>, Error>;
+    async fn get_human_task(
+        &self,
+        instance: WorkflowInstanceId,
+        task_id: String,
+        options: RequestOptions,
+    ) -> Result<HumanTaskSnapshot, Error>;
+    async fn human_task_command(
+        &self,
+        instance: WorkflowInstanceId,
+        task_id: String,
+        command: HumanTaskCommand,
+        options: RequestOptions,
+    ) -> Result<HumanTaskCommandReceipt, Error>;
+    async fn human_task_command_status(
+        &self,
+        instance: WorkflowInstanceId,
+        task_id: String,
+        command: String,
+        options: RequestOptions,
+    ) -> Result<HumanTaskCommandStatus, Error>;
+    async fn retry_human_task(
+        &self,
+        instance: WorkflowInstanceId,
+        task_id: String,
+        command: String,
+        options: RequestOptions,
+    ) -> Result<HumanTaskCommandReceipt, Error>;
     async fn ensure_schedule(
         &self,
         definition: kish_lingshu_event_dispatch_contract::ScheduleDefinition,
@@ -201,48 +230,6 @@ pub(crate) trait ProductBinding: Send + Sync {
         after: Option<EventCursor>,
         options: RequestOptions,
     ) -> Result<WorkflowEventStream, Error>;
-
-    async fn list_application_tasks(
-        &self,
-        query: ApplicationTaskQuery,
-        options: RequestOptions,
-    ) -> Result<Page<UserTaskSummary>, Error>;
-
-    async fn summarize_application_tasks(
-        &self,
-        query: ApplicationTaskQuery,
-        options: RequestOptions,
-    ) -> Result<ApplicationTaskSummary, Error>;
-
-    async fn get_application_task(
-        &self,
-        task_id: UserTaskId,
-        options: RequestOptions,
-    ) -> Result<UserTask, Error>;
-
-    async fn retry_user_task_completion(
-        &self,
-        request: RetryUserTaskCompletion,
-        options: RequestOptions,
-    ) -> Result<UserTaskCompletionRetryReceipt, Error>;
-
-    async fn list_current_user_tasks(
-        &self,
-        query: CurrentUserTaskQuery,
-        options: RequestOptions,
-    ) -> Result<Page<UserTaskSummary>, Error>;
-
-    async fn get_current_user_task(
-        &self,
-        task_id: UserTaskId,
-        options: RequestOptions,
-    ) -> Result<UserTask, Error>;
-
-    async fn act_on_user_task(
-        &self,
-        action: UserTaskAction,
-        options: MutationOptions,
-    ) -> Result<TaskActionReceipt, Error>;
 }
 
 pub(crate) type BindingRef = Arc<dyn ProductBinding>;

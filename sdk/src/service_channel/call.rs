@@ -661,9 +661,6 @@ mod performance_host_tests;
 #[cfg(all(test, feature = "http-client"))]
 #[path = "call_scale_host_tests.rs"]
 mod scale_host_tests;
-#[cfg(all(test, feature = "http-client"))]
-#[path = "call_task_host_tests.rs"]
-mod task_host_tests;
 #[cfg(test)]
 #[path = "call_tests.rs"]
 pub(crate) mod tests;

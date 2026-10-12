@@ -57,14 +57,14 @@ pub fn event_job(attribute: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
-pub fn user_task_completion_handler(_attribute: TokenStream, item: TokenStream) -> TokenStream {
-    let item = proc_macro2::TokenStream::from(item);
-    let error = Error::new(
-        Span::call_site(),
-        "user_task_completion_handler must be inside lingshu_service",
+pub fn human_task_handler(_attribute: TokenStream, item: TokenStream) -> TokenStream {
+    let input = proc_macro2::TokenStream::from(item);
+    Error::new_spanned(
+        input,
+        "human_task_handler must be inside lingshu_service",
     )
-    .into_compile_error();
-    quote!(#error #item).into()
+    .to_compile_error()
+    .into()
 }
 
 struct EventArgs {

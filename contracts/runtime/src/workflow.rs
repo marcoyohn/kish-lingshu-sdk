@@ -17,6 +17,10 @@ pub type WorkflowEventStream =
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct RuntimeBindings {
+    /// Optional immutable published definition for an idempotent public start.
+    /// Ownership and published-state validation remain server responsibilities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_define_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_bindings: Option<WorkspaceBindings>,
     /// Session-scoped client tool schemas. Provider connection details never

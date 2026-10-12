@@ -78,6 +78,18 @@ impl WorkflowStart {
         }
     }
 
+    /// Pin the first business-draft save to the definition selected by the application.
+    pub fn published_definition(mut self, definition_id: u64) -> Result<Self, Error> {
+        if definition_id == 0 {
+            return Err(Error::configuration(
+                "workflow_define_id",
+                "published definition ID must be positive",
+            ));
+        }
+        self.bindings.published_define_id = Some(definition_id);
+        Ok(self)
+    }
+
     pub fn in_session(mut self, session_id: SessionId) -> Self {
         self.session_id = Some(session_id);
         self
@@ -1246,6 +1258,40 @@ mod tests {
                 error,
                 Error::Application(failure) if failure.problem.code.as_str() == "conflict"
             ));
+        });
+    }
+
+    #[test]
+    fn draft_start_recovery_keeps_the_original_definition_pin() {
+        futures::executor::block_on(async {
+            let client = client();
+            let start = WorkflowStart::structured(json!({"business_ref":"draft-1"}))
+                .published_definition(100)
+                .unwrap();
+            let first = client
+                .workflows()
+                .start(WorkflowId(42), start.clone(), mutation("draft-start"))
+                .await
+                .unwrap();
+            let replay = client
+                .workflows()
+                .start(WorkflowId(42), start, mutation("draft-start"))
+                .await
+                .unwrap();
+            assert_eq!(first.handle(), replay.handle());
+            let changed = WorkflowStart::structured(json!({"business_ref":"draft-1"}))
+                .published_definition(101)
+                .unwrap();
+            match client
+                .workflows()
+                .start(WorkflowId(42), changed, mutation("draft-start"))
+                .await
+            {
+                Err(Error::Application(failure)) => {
+                    assert_eq!(failure.problem.code.as_str(), "conflict")
+                }
+                _ => panic!("Changed definition must not replace the original draft start"),
+            }
         });
     }
 

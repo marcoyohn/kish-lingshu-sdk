@@ -78,7 +78,7 @@ fn role_registry(
             service_key: "refunds".into(),
             description: String::new(),
             operations: vec![OperationDefinition {
-                user_task_completion: None,
+                human_task: None,
                 operation_key: "execute".into(),
                 version: "v1".into(),
                 description: String::new(),
@@ -152,7 +152,7 @@ fn invocation(registry: &ServiceRegistry, mode: CallMode, input: Value) -> Servi
             deadline_ms: chrono::Utc::now().timestamp_millis() + 5000,
             trace_id: None,
             invocation: InvocationRole::Call(CallContext {
-                user_task_completion: None,
+                human_task: None,
                 call_id: "call-1".into(),
                 attempt: 1,
                 caller: "workflow".into(),

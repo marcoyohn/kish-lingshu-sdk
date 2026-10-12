@@ -380,7 +380,7 @@ impl ServiceConnection {
         self.0.shared.credential.application_id()
     }
 
-    /// Protects an Event Consumer or User Task adapter before its handlers run.
+    /// Protects an Event Consumer or Service adapter before its handlers run.
     /// Configure the external HTTPS URL (HTTP is allowed only on loopback),
     /// including any proxy prefix and exact query. URLs use reqwest's canonical
     /// representation; the original request path/query must match it exactly.
