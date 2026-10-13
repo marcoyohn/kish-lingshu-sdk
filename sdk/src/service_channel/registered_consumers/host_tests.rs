@@ -118,6 +118,7 @@ async fn consumer_registration_scenario(connected: bool) {
     }
     let declaration = super::tests::declaration();
     let catalog = ProviderCatalog {
+        participant_configuration: vec![],
         format_version: 1,
         application_id: app.clone(),
         provider_key: declaration.provider_key.clone(),

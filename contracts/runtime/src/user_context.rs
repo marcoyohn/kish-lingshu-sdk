@@ -25,4 +25,6 @@ pub struct UserInfo {
 
 task_local! {
     pub static CURRENT_USER: Arc<UserInfo>;
+    /// Populated only after the product Adapter verifies the narrow credential.
+    pub static CURRENT_HUMAN_TASK_AUTHORITY: crate::human_task::HumanTaskUserDelegation;
 }

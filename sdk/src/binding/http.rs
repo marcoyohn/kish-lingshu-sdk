@@ -4,8 +4,8 @@ use kish_lingshu_runtime_contract::WorkspaceApprovalMode;
 
 use std::{
     sync::{
-        atomic::{AtomicU32, Ordering},
         Arc,
+        atomic::{AtomicU32, Ordering},
     },
     time::{Duration, SystemTime},
 };
@@ -24,26 +24,26 @@ use kish_lingshu_runtime_contract::{
 };
 
 use kish_lingshu_runtime_contract::{AssetRef, AssetUpload};
-use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use rand::Rng;
-use reqwest::{header, Method, Response};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use reqwest::{Method, Response, header};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use url::Url;
 
 use super::{
-    retry::{execute_with_retry, ReplaySafety, RetryFailure, RetryPolicy, RetryReason},
+    ProductBinding, WorkflowEventStream,
+    retry::{ReplaySafety, RetryFailure, RetryPolicy, RetryReason, execute_with_retry},
     runtime::runtime_error,
     sse::{JsonSseParser, SseItem, SseReattachment},
-    ProductBinding, WorkflowEventStream,
 };
 
 use crate::workflow::{
     AgentTaskPlan, ConversationScope, SessionMessage, SessionRecord, WorkflowRecord,
 };
 use crate::{
-    auth::ClientCredential, config::ClientConfig, request::TransportAttempt, ApplicationFailure,
-    AuthenticatedUser, Error, MutationOptions, ProtocolDirection, ProtocolError, RequestOptions,
-    TransportFailure, TransportKind,
+    ApplicationFailure, AuthenticatedUser, Error, MutationOptions, ProtocolDirection,
+    ProtocolError, RequestOptions, TransportFailure, TransportKind, auth::ClientCredential,
+    config::ClientConfig, request::TransportAttempt,
 };
 
 const APPLICATION_HEADER: &str = "x-kish-app-id";
@@ -117,6 +117,25 @@ impl HttpBinding {
                 retry: RetryPolicy::new(config.retry_limit()),
             }),
         })
+    }
+
+    pub(crate) async fn delegate_human_task_user(
+        &self,
+        authority: &HumanTaskUserDelegation,
+        options: RequestOptions,
+    ) -> Result<HumanTaskUserCredential, Error> {
+        let url = self.endpoint("api/user/services/v1/human-task-users")?;
+        let body = self.encode_body(authority, options.request_id())?;
+        self.execute_json(
+            Method::POST,
+            url,
+            body,
+            &options,
+            ReplaySafety::NonIdempotentMutation,
+            None,
+            false,
+        )
+        .await
     }
 
     fn endpoint(&self, path: &str) -> Result<Url, Error> {
@@ -600,6 +619,52 @@ impl LegacySession {
 
 #[async_trait]
 impl ProductBinding for HttpBinding {
+    async fn list_published_workflows(
+        &self,
+        after: Option<u64>,
+        limit: u32,
+        options: RequestOptions,
+    ) -> Result<kish_lingshu_runtime_contract::workflow_catalog::PublishedWorkflowPage, Error> {
+        let mut url = self.endpoint("openapi/workflows/published")?;
+        url.query_pairs_mut()
+            .append_pair("limit", &limit.to_string());
+        if let Some(after) = after {
+            url.query_pairs_mut()
+                .append_pair("after_workflow_id", &after.to_string());
+        }
+        self.execute_json(
+            Method::GET,
+            url,
+            Arc::from([]),
+            &options,
+            ReplaySafety::Read,
+            None,
+            false,
+        )
+        .await
+    }
+    async fn get_published_workflow(
+        &self,
+        workflow: u64,
+        definition: u64,
+        options: RequestOptions,
+    ) -> Result<kish_lingshu_runtime_contract::workflow_catalog::PublishedWorkflowDefinition, Error>
+    {
+        let url = self.endpoint(&format!(
+            "openapi/workflows/{workflow}/published-definitions/{definition}"
+        ))?;
+        self.execute_json(
+            Method::GET,
+            url,
+            Arc::from([]),
+            &options,
+            ReplaySafety::Read,
+            None,
+            false,
+        )
+        .await
+    }
+
     fn name(&self) -> &'static str {
         "http"
     }

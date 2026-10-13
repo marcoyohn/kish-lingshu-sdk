@@ -49,6 +49,7 @@ async fn setup() -> (
 }
 fn catalog() -> ProviderCatalog {
     ProviderCatalog {
+        participant_configuration: vec![],
         format_version: 1,
         application_id: "app".into(),
         provider_key: "backend".into(),

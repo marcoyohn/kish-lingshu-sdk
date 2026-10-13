@@ -90,6 +90,7 @@ async fn call_registration_scenario(connected: bool, catalog_only: bool) {
         .unwrap();
     let registry = Arc::new(builder.build().unwrap());
     let catalog = ProviderCatalog {
+        participant_configuration: vec![],
         format_version: 1,
         application_id: app.clone(),
         provider_key: name.into(),

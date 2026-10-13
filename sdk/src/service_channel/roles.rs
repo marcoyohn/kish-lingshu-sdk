@@ -609,13 +609,27 @@ impl ServiceChannelSessions {
         &self,
         catalog: &kish_lingshu_runtime_contract::provider::ProviderCatalog,
     ) -> Result<RegisteredChannelRole, ChannelSessionError> {
+        self.register_provider_role_with_configuration(catalog, Default::default())
+            .await
+    }
+
+    pub async fn register_provider_role_with_configuration(
+        &self,
+        catalog: &kish_lingshu_runtime_contract::provider::ProviderCatalog,
+        configuration: crate::participant_configuration::ParticipantConfigurationRegistry,
+    ) -> Result<RegisteredChannelRole, ChannelSessionError> {
         if catalog.application_id != self.identity.connection.application_id() {
             return Err(ChannelSessionError::InvalidConfig);
         }
-        let snapshot = Arc::new(super::catalog::CatalogSnapshot::new(
-            catalog,
-            &self.identity.connection,
-        )?);
+        let mut declared = catalog.participant_configuration.clone();
+        declared.sort_by(|a, b| a.key.cmp(&b.key));
+        if declared != configuration.capabilities() {
+            return Err(ChannelSessionError::InvalidConfig);
+        }
+        let mut snapshot =
+            super::catalog::CatalogSnapshot::new(catalog, &self.identity.connection)?;
+        snapshot.configuration = configuration;
+        let snapshot = Arc::new(snapshot);
         let digest = snapshot.digest.clone();
         let initial = self.identity.bootstrap_response();
         let instance = self
@@ -1377,6 +1391,51 @@ impl ServiceChannelSessions {
                                 }
                             });
                         }
+                        continue;
+                    }
+                }
+                // Dynamic reads hold the existing bounded catalog reservation,
+                // but never block route proofs, heartbeats or registration hints.
+                if let Some(snapshot) = &catalog {
+                    let bytes = query.payload().map(|p| p.to_bytes().into_owned());
+                    let is_configuration = bytes.as_ref().is_some_and(|bytes| {
+                        TransportEnvelope::decode(
+                            bytes,
+                            &target,
+                            &initial.application_id,
+                            chrono::Utc::now().timestamp_millis(),
+                        )
+                        .is_ok_and(|e| e.kind == MessageKind::ConfigurationQuery)
+                    });
+                    if is_configuration {
+                        if !admission.ready() || !route_catalog_target(&endpoint, snapshot, &target)
+                        {
+                            continue;
+                        }
+                        let snapshot = snapshot.clone();
+                        let endpoint = endpoint.clone();
+                        let connection = connection.clone();
+                        let initial = initial.clone();
+                        let signer = signer.clone();
+                        let expires = role_window.borrow().expires_at_ms;
+                        let deadline = role_window.borrow().deadline.min(*authority.borrow());
+                        let mut physical = physical.clone();
+                        let mut logical = logical.clone();
+                        let mut stopped = stopped.clone();
+                        call_tasks.spawn(async move {
+                            let (_reservation, _permit) = (reservation, _catalog_slot);
+                            tokio::select! {
+                                biased;
+                                _ = stopped.changed() => {},
+                                _ = physical.changed() => {},
+                                _ = logical.changed() => {},
+                                _ = tokio::time::timeout_at(deadline, async {
+                                    if let Ok(reply) = super::catalog::configuration_reply(&snapshot, &endpoint, &target, &bytes.unwrap(), expires, &connection, &initial, &signer).await {
+                                        let _ = query.reply(target.as_str().to_owned(), reply).await;
+                                    }
+                                }) => {},
+                            }
+                        });
                         continue;
                     }
                 }
@@ -2406,6 +2465,7 @@ mod tests {
             .await
             .unwrap();
         let mut catalog = ProviderCatalog {
+            participant_configuration: vec![],
             format_version: 1,
             application_id: app,
             provider_key: "native-renewed".into(),
@@ -2545,6 +2605,7 @@ mod tests {
             .unwrap();
         let mut role = pool
             .register_provider_role(&ProviderCatalog {
+                participant_configuration: vec![],
                 format_version: 1,
                 application_id: app,
                 provider_key: "expiry-source".into(),
@@ -2610,6 +2671,7 @@ mod tests {
             .await
             .unwrap();
         let catalog = ProviderCatalog {
+            participant_configuration: vec![],
             format_version: 1,
             application_id: app.clone(),
             provider_key: "native-resource-source".into(),
@@ -2771,6 +2833,7 @@ mod tests {
             .await
             .unwrap();
         let catalog = ProviderCatalog {
+            participant_configuration: vec![],
             format_version: 1,
             application_id: app.clone(),
             provider_key: "native-source".into(),

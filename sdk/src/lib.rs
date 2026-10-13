@@ -55,6 +55,8 @@ pub use kish_lingshu_sdk_macros::{
     human_task_handler, lingshu_service, service_call, service_event,
 };
 
+#[cfg(feature = "participant-configuration")]
+pub mod participant_configuration;
 #[cfg(feature = "service-http")]
 pub mod provider;
 

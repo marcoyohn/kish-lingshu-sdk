@@ -95,6 +95,7 @@ async fn native_managed_reconnect_reproves_same_role_then_expiry_stops_all_retri
         .unwrap();
     let ids = pool.session_ids();
     let catalog = kish_lingshu_runtime_contract::provider::ProviderCatalog {
+        participant_configuration: vec![],
         format_version: 1,
         application_id: app,
         provider_key: "reconnect-source".into(),

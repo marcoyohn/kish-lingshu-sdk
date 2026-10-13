@@ -1,11 +1,11 @@
 //! Versioned, transport-independent proofs. No configuration, storage or network I/O.
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::{
     digest, hmac,
     rand::{SecureRandom, SystemRandom},
     signature::{self, Ed25519KeyPair, KeyPair},
 };
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 pub const SIGNATURE_HEADER: &str = "x-lingshu-signature";
 const EPOCH_SECONDS: i64 = 3600;
@@ -341,6 +341,28 @@ impl ServiceSigner {
             expires_at,
         };
         self.sign(app, "callback", &claims, now, expires_at)
+    }
+
+    pub fn sign_human_task_user<T: Serialize>(
+        &self,
+        app: &str,
+        claims: &T,
+        now: i64,
+    ) -> Result<String, ServiceAuthError> {
+        self.sign(
+            app,
+            "human-task-user",
+            claims,
+            now,
+            now.checked_add(30).ok_or(ServiceAuthError)?,
+        )
+    }
+    pub fn verify_human_task_user<T: DeserializeOwned>(
+        &self,
+        proof: &str,
+        now: i64,
+    ) -> Result<(String, T), ServiceAuthError> {
+        self.verify_service_proof(proof, "human-task-user", now, 30)
     }
 
     pub fn sign_service_session<T: Serialize>(
@@ -825,6 +847,7 @@ mod transport_tests {
         for (kind, maximum) in [
             (MessageKind::Register, 10_000),
             (MessageKind::CatalogRead, 10_000),
+            (MessageKind::ConfigurationQuery, 10_000),
             (MessageKind::InvokeCall, 10_000),
             (MessageKind::InvokeEvent, 30_000),
             (MessageKind::PublishEvent, 10_000),
@@ -949,52 +972,60 @@ mod transport_tests {
             *replaced = RouteIdentity::new("other").unwrap();
             assert!(check(&other, signer.public_key(), b"payload", NOW).is_err());
         }
-        assert!(verify_client_transport_message(
-            signer.public_key(),
-            &identity,
-            &proof,
-            MessageKind::RenewRoles,
-            &target(),
-            &request(),
-            b"payload",
-            NOW
-        )
-        .is_err());
-        assert!(verify_client_transport_message(
-            signer.public_key(),
-            &identity,
-            &proof,
-            MessageKind::Register,
-            &target(),
-            &RouteIdentity::new("req-other").unwrap(),
-            b"payload",
-            NOW
-        )
-        .is_err());
-        assert!(verify_client_transport_message(
-            signer.public_key(),
-            &identity,
-            &proof,
-            MessageKind::Register,
-            &ExactRouteKey::new("ls/v1/other/control").unwrap(),
-            &request(),
-            b"payload",
-            NOW
-        )
-        .is_err());
+        assert!(
+            verify_client_transport_message(
+                signer.public_key(),
+                &identity,
+                &proof,
+                MessageKind::RenewRoles,
+                &target(),
+                &request(),
+                b"payload",
+                NOW
+            )
+            .is_err()
+        );
+        assert!(
+            verify_client_transport_message(
+                signer.public_key(),
+                &identity,
+                &proof,
+                MessageKind::Register,
+                &target(),
+                &RouteIdentity::new("req-other").unwrap(),
+                b"payload",
+                NOW
+            )
+            .is_err()
+        );
+        assert!(
+            verify_client_transport_message(
+                signer.public_key(),
+                &identity,
+                &proof,
+                MessageKind::Register,
+                &ExactRouteKey::new("ls/v1/other/control").unwrap(),
+                &request(),
+                b"payload",
+                NOW
+            )
+            .is_err()
+        );
         let platform = ServiceSigner::new(&[7; 32]).unwrap();
         let trust = platform.transport_trust("app-a", NOW / 1000).unwrap();
-        assert!(verify_transport_message(
-            &trust,
-            &proof,
-            "app-a",
-            MessageKind::Register,
-            &target(),
-            &request(),
-            b"payload",
-            NOW
-        )
-        .is_err());
+        assert!(
+            verify_transport_message(
+                &trust,
+                &proof,
+                "app-a",
+                MessageKind::Register,
+                &target(),
+                &request(),
+                b"payload",
+                NOW
+            )
+            .is_err()
+        );
         let platform_proof = platform
             .sign_transport_message(
                 "app-a",
@@ -1007,17 +1038,19 @@ mod transport_tests {
             )
             .unwrap();
         assert!(check(&identity, signer.public_key(), b"payload", NOW).is_ok());
-        assert!(verify_client_transport_message(
-            signer.public_key(),
-            &identity,
-            &platform_proof,
-            MessageKind::Register,
-            &target(),
-            &request(),
-            b"payload",
-            NOW
-        )
-        .is_err());
+        assert!(
+            verify_client_transport_message(
+                signer.public_key(),
+                &identity,
+                &platform_proof,
+                MessageKind::Register,
+                &target(),
+                &request(),
+                b"payload",
+                NOW
+            )
+            .is_err()
+        );
         assert_eq!(format!("{signer:?}"), "ChannelMessageSigner([REDACTED])");
     }
 
@@ -1043,17 +1076,19 @@ mod transport_tests {
                 NOW + 10_000,
             )
             .unwrap();
-        assert!(verify_transport_message(
-            &trust,
-            &proof,
-            "app-a",
-            MessageKind::Register,
-            &target(),
-            &request(),
-            &payload,
-            NOW
-        )
-        .is_ok());
+        assert!(
+            verify_transport_message(
+                &trust,
+                &proof,
+                "app-a",
+                MessageKind::Register,
+                &target(),
+                &request(),
+                &payload,
+                NOW
+            )
+            .is_ok()
+        );
         for (app, kind, id, bytes) in [
             ("other", MessageKind::Register, request(), payload.clone()),
             ("app-a", MessageKind::BindLane, request(), payload.clone()),
@@ -1070,37 +1105,34 @@ mod transport_tests {
                 b"{\"enrollment_error\":\"rejected\"}".to_vec(),
             ),
         ] {
-            assert!(verify_transport_message(
+            assert!(
+                verify_transport_message(&trust, &proof, app, kind, &target(), &id, &bytes, NOW)
+                    .is_err()
+            );
+        }
+        assert!(
+            verify_transport_message(
                 &trust,
-                &proof,
-                app,
-                kind,
+                "unsigned",
+                "app-a",
+                MessageKind::Register,
                 &target(),
-                &id,
-                &bytes,
+                &request(),
+                &payload,
                 NOW
             )
-            .is_err());
-        }
-        assert!(verify_transport_message(
-            &trust,
-            "unsigned",
-            "app-a",
-            MessageKind::Register,
-            &target(),
-            &request(),
-            &payload,
-            NOW
-        )
-        .is_err());
-        assert!(serde_json::from_str::<ChannelEnrollmentRejection>(
-            r#"{"enrollment_error":"unknown"}"#
-        )
-        .is_err());
-        assert!(serde_json::from_str::<ChannelEnrollmentRejection>(
-            r#"{"enrollment_error":"catalog_not_ready","extra":true}"#
-        )
-        .is_err());
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<ChannelEnrollmentRejection>(r#"{"enrollment_error":"unknown"}"#)
+                .is_err()
+        );
+        assert!(
+            serde_json::from_str::<ChannelEnrollmentRejection>(
+                r#"{"enrollment_error":"catalog_not_ready","extra":true}"#
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1121,89 +1153,107 @@ mod transport_tests {
         let check = |app, kind, target: &ExactRouteKey, req: &RouteIdentity, bytes, time| {
             verify_transport_message(&trust, &proof, app, kind, target, req, bytes, time)
         };
-        assert!(check(
-            "app-a",
-            MessageKind::CompleteCall,
-            &target(),
-            &request(),
-            b"payload",
-            NOW
-        )
-        .is_ok());
-        assert!(check(
-            "app-b",
-            MessageKind::CompleteCall,
-            &target(),
-            &request(),
-            b"payload",
-            NOW
-        )
-        .is_err());
-        assert!(check(
-            "app-a",
-            MessageKind::PublishEvent,
-            &target(),
-            &request(),
-            b"payload",
-            NOW
-        )
-        .is_err());
-        assert!(check(
-            "app-a",
-            MessageKind::CompleteCall,
-            &ExactRouteKey::new("ls/v1/other/control").unwrap(),
-            &request(),
-            b"payload",
-            NOW
-        )
-        .is_err());
-        assert!(check(
-            "app-a",
-            MessageKind::CompleteCall,
-            &target(),
-            &RouteIdentity::new("req-2").unwrap(),
-            b"payload",
-            NOW
-        )
-        .is_err());
-        assert!(check(
-            "app-a",
-            MessageKind::CompleteCall,
-            &target(),
-            &request(),
-            b"changed",
-            NOW
-        )
-        .is_err());
-        assert!(check(
-            "app-a",
-            MessageKind::CompleteCall,
-            &target(),
-            &request(),
-            b"payload",
-            NOW + 59_999
-        )
-        .is_ok());
-        assert!(check(
-            "app-a",
-            MessageKind::CompleteCall,
-            &target(),
-            &request(),
-            b"payload",
-            NOW + 60_000
-        )
-        .is_err());
-        assert!(signer
-            .sign_transport_message(
+        assert!(
+            check(
                 "app-a",
                 MessageKind::CompleteCall,
                 &target(),
                 &request(),
                 b"payload",
-                NOW,
-                NOW + 60_001
+                NOW
             )
-            .is_err());
+            .is_ok()
+        );
+        assert!(
+            check(
+                "app-b",
+                MessageKind::CompleteCall,
+                &target(),
+                &request(),
+                b"payload",
+                NOW
+            )
+            .is_err()
+        );
+        assert!(
+            check(
+                "app-a",
+                MessageKind::PublishEvent,
+                &target(),
+                &request(),
+                b"payload",
+                NOW
+            )
+            .is_err()
+        );
+        assert!(
+            check(
+                "app-a",
+                MessageKind::CompleteCall,
+                &ExactRouteKey::new("ls/v1/other/control").unwrap(),
+                &request(),
+                b"payload",
+                NOW
+            )
+            .is_err()
+        );
+        assert!(
+            check(
+                "app-a",
+                MessageKind::CompleteCall,
+                &target(),
+                &RouteIdentity::new("req-2").unwrap(),
+                b"payload",
+                NOW
+            )
+            .is_err()
+        );
+        assert!(
+            check(
+                "app-a",
+                MessageKind::CompleteCall,
+                &target(),
+                &request(),
+                b"changed",
+                NOW
+            )
+            .is_err()
+        );
+        assert!(
+            check(
+                "app-a",
+                MessageKind::CompleteCall,
+                &target(),
+                &request(),
+                b"payload",
+                NOW + 59_999
+            )
+            .is_ok()
+        );
+        assert!(
+            check(
+                "app-a",
+                MessageKind::CompleteCall,
+                &target(),
+                &request(),
+                b"payload",
+                NOW + 60_000
+            )
+            .is_err()
+        );
+        assert!(
+            signer
+                .sign_transport_message(
+                    "app-a",
+                    MessageKind::CompleteCall,
+                    &target(),
+                    &request(),
+                    b"payload",
+                    NOW,
+                    NOW + 60_001
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -1222,51 +1272,59 @@ mod transport_tests {
                 NOW + 5000,
             )
             .unwrap();
-        assert!(verify_transport_message(
-            &http_trust,
-            &proof,
-            "app-a",
-            MessageKind::InvokeCall,
-            &target(),
-            &request(),
-            b"payload",
-            NOW
-        )
-        .is_err());
-        assert!(verify_callback(
-            &transport_trust,
-            &proof,
-            "app-a",
-            "POST",
-            target().as_str(),
-            b"payload",
-            NOW / 1000
-        )
-        .is_err());
+        assert!(
+            verify_transport_message(
+                &http_trust,
+                &proof,
+                "app-a",
+                MessageKind::InvokeCall,
+                &target(),
+                &request(),
+                b"payload",
+                NOW
+            )
+            .is_err()
+        );
+        assert!(
+            verify_callback(
+                &transport_trust,
+                &proof,
+                "app-a",
+                "POST",
+                target().as_str(),
+                b"payload",
+                NOW / 1000
+            )
+            .is_err()
+        );
         let callback = signer
             .sign_callback("app-a", "POST", target().as_str(), b"payload", NOW / 1000)
             .unwrap();
-        assert!(verify_transport_message(
-            &transport_trust,
-            &callback,
-            "app-a",
-            MessageKind::InvokeCall,
-            &target(),
-            &request(),
-            b"payload",
-            NOW
-        )
-        .is_err());
-        assert!(verify_callback(
-            &http_trust,
-            &callback,
-            "app-a",
-            "POST",
-            target().as_str(),
-            b"payload",
-            NOW / 1000
-        )
-        .is_ok());
+        assert!(
+            verify_transport_message(
+                &transport_trust,
+                &callback,
+                "app-a",
+                MessageKind::InvokeCall,
+                &target(),
+                &request(),
+                b"payload",
+                NOW
+            )
+            .is_err()
+        );
+        assert!(
+            verify_callback(
+                &http_trust,
+                &callback,
+                "app-a",
+                "POST",
+                target().as_str(),
+                b"payload",
+                NOW / 1000
+            )
+            .is_ok()
+        );
     }
 }
 
@@ -1274,6 +1332,45 @@ mod transport_tests {
 mod tests {
     use super::*;
     const NOW: i64 = 1_800_000_001;
+
+    #[test]
+    fn human_user_proof_binds_purpose_application_and_short_expiry() {
+        let signer = ServiceSigner::new(&[7; 32]).unwrap();
+        let proof = signer
+            .sign_human_task_user("ykm", &"subject/task", NOW)
+            .unwrap();
+        assert_eq!(
+            signer
+                .verify_human_task_user::<String>(&proof, NOW + 1)
+                .unwrap(),
+            ("ykm".into(), "subject/task".into())
+        );
+        assert!(
+            signer
+                .verify_human_task_user::<String>(&proof, NOW + 30)
+                .is_err()
+        );
+        assert!(
+            signer
+                .verify_service_session::<String>(&proof, NOW + 1)
+                .is_err()
+        );
+        assert!(signer.verify_session::<String>(&proof, NOW + 1).is_err());
+        let service = signer
+            .sign_service_session("ykm", &"subject/task", NOW)
+            .unwrap();
+        assert!(
+            signer
+                .verify_human_task_user::<String>(&service, NOW + 1)
+                .is_err()
+        );
+        let other_signer = ServiceSigner::new(&[8; 32]).unwrap();
+        assert!(
+            other_signer
+                .verify_human_task_user::<String>(&proof, NOW + 1)
+                .is_err()
+        );
+    }
 
     #[test]
     fn consumer_presence_proofs_are_short_lived_and_not_session_credentials() {
@@ -1285,14 +1382,18 @@ mod tests {
                 .unwrap(),
             ("app".into(), 42)
         );
-        assert!(signer
-            .verify_consumer_presence::<u64>(&proof, 1003)
-            .is_err());
+        assert!(
+            signer
+                .verify_consumer_presence::<u64>(&proof, 1003)
+                .is_err()
+        );
         assert!(signer.verify_session::<u64>(&proof, 1001).is_err());
         let session = signer.sign_session("app", &42u64, 1000, 1100).unwrap();
-        assert!(signer
-            .verify_consumer_presence::<u64>(&session, 1001)
-            .is_err());
+        assert!(
+            signer
+                .verify_consumer_presence::<u64>(&session, 1001)
+                .is_err()
+        );
     }
     #[test]
     fn directory_pages_have_separate_purpose_and_bounded_large_proofs() {
@@ -1306,21 +1407,29 @@ mod tests {
                 .unwrap(),
             data
         );
-        assert!(signer
-            .verify_consumer_directory::<String>(&proof, 1003)
-            .is_err());
-        assert!(signer
-            .verify_consumer_presence::<String>(&proof, 1001)
-            .is_err());
+        assert!(
+            signer
+                .verify_consumer_directory::<String>(&proof, 1003)
+                .is_err()
+        );
+        assert!(
+            signer
+                .verify_consumer_presence::<String>(&proof, 1001)
+                .is_err()
+        );
         let legacy = signer
             .sign_consumer_presence("platform-directory", &42, 1000)
             .unwrap();
-        assert!(signer
-            .verify_consumer_directory::<u64>(&legacy, 1001)
-            .is_err());
-        assert!(signer
-            .sign_consumer_directory(&"x".repeat(2 * 1024 * 1024), 1000)
-            .is_err());
+        assert!(
+            signer
+                .verify_consumer_directory::<u64>(&legacy, 1001)
+                .is_err()
+        );
+        assert!(
+            signer
+                .sign_consumer_directory(&"x".repeat(2 * 1024 * 1024), 1000)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1330,16 +1439,18 @@ mod tests {
         let proof = signer
             .sign_callback("app-a", "POST", "https://app/events", b"payload", NOW)
             .unwrap();
-        assert!(verify_callback(
-            &trust,
-            &proof,
-            "app-a",
-            "POST",
-            "https://app/events",
-            b"payload",
-            NOW
-        )
-        .is_ok());
+        assert!(
+            verify_callback(
+                &trust,
+                &proof,
+                "app-a",
+                "POST",
+                "https://app/events",
+                b"payload",
+                NOW
+            )
+            .is_ok()
+        );
         for (app, method, url, body, time) in [
             (
                 "app-b",
@@ -1390,16 +1501,18 @@ mod tests {
             .unwrap()
             .trust("app-a", NOW)
             .unwrap();
-        assert!(verify_callback(
-            &other,
-            &proof,
-            "app-a",
-            "POST",
-            "https://app/events",
-            b"payload",
-            NOW
-        )
-        .is_err());
+        assert!(
+            verify_callback(
+                &other,
+                &proof,
+                "app-a",
+                "POST",
+                "https://app/events",
+                b"payload",
+                NOW
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1427,9 +1540,11 @@ mod tests {
         let callback = signer
             .sign_callback("a", "POST", "https://a", b"", NOW)
             .unwrap();
-        assert!(signer
-            .verify_session::<CallbackClaims>(&callback, NOW)
-            .is_err());
+        assert!(
+            signer
+                .verify_session::<CallbackClaims>(&callback, NOW)
+                .is_err()
+        );
         assert!(ServiceSigner::new(b"short").is_err());
         assert!(!format!("{:?}", signer).contains("777"));
     }
@@ -1438,7 +1553,7 @@ mod tests {
 #[cfg(test)]
 mod native_service_tests {
     use super::*;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     #[test]
     fn service_proofs_are_scoped_by_purpose_application_and_time() {
         let signer = ServiceSigner::new(&[71; 32]).unwrap();
@@ -1451,16 +1566,22 @@ mod native_service_tests {
             .verify_service_session::<Value>(&token, now + 1)
             .unwrap();
         assert_eq!(app, "app-a");
-        assert!(signer
-            .verify_service_completion::<Value>(&token, now + 1)
-            .is_err());
+        assert!(
+            signer
+                .verify_service_completion::<Value>(&token, now + 1)
+                .is_err()
+        );
         assert!(signer.verify_session::<Value>(&token, now + 1).is_err());
-        assert!(signer
-            .verify_service_session::<Value>(&token, now + 301)
-            .is_err());
-        assert!(other
-            .verify_service_session::<Value>(&token, now + 1)
-            .is_err());
+        assert!(
+            signer
+                .verify_service_session::<Value>(&token, now + 301)
+                .is_err()
+        );
+        assert!(
+            other
+                .verify_service_session::<Value>(&token, now + 1)
+                .is_err()
+        );
         let completion = signer
             .sign_service_completion(
                 "app-a",
@@ -1469,17 +1590,25 @@ mod native_service_tests {
                 now + 86_400,
             )
             .unwrap();
-        assert!(signer
-            .verify_service_completion::<Value>(&completion, now + 86_399)
-            .is_ok());
-        assert!(signer
-            .verify_service_session::<Value>(&completion, now + 1)
-            .is_err());
-        assert!(signer
-            .verify_service_completion::<Value>(&completion, now + 86_461)
-            .is_err());
-        assert!(signer
-            .sign_service_completion("app-a", &json!({}), now, now + 90_000)
-            .is_err());
+        assert!(
+            signer
+                .verify_service_completion::<Value>(&completion, now + 86_399)
+                .is_ok()
+        );
+        assert!(
+            signer
+                .verify_service_session::<Value>(&completion, now + 1)
+                .is_err()
+        );
+        assert!(
+            signer
+                .verify_service_completion::<Value>(&completion, now + 86_461)
+                .is_err()
+        );
+        assert!(
+            signer
+                .sign_service_completion("app-a", &json!({}), now, now + 90_000)
+                .is_err()
+        );
     }
 }

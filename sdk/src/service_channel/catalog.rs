@@ -18,6 +18,7 @@ pub(super) struct CatalogSnapshot {
     release: String,
     payload: Box<serde_json::value::RawValue>,
     _bytes: tokio::sync::OwnedSemaphorePermit,
+    pub(super) configuration: crate::participant_configuration::ParticipantConfigurationRegistry,
 }
 impl CatalogSnapshot {
     pub(super) fn new(
@@ -51,6 +52,7 @@ impl CatalogSnapshot {
             release: catalog.release.clone(),
             payload,
             _bytes: permit,
+            configuration: Default::default(),
         })
     }
 }
@@ -77,11 +79,20 @@ fn validate_read(
     };
     let request = TransportEnvelope::decode(bytes, target, &route.application_id, now)
         .map_err(|_| ChannelSessionError::InvalidResponse)?;
-    let read: ProviderCatalogRead = serde_json::from_str(request.payload.get())
-        .map_err(|_| ChannelSessionError::InvalidResponse)?;
-    if request.kind != MessageKind::CatalogRead
-        || request.deadline_unix_ms
-            > now.saturating_add(CATALOG_READ_TIMEOUT_MS + MAX_BOOTSTRAP_CLOCK_SKEW_MS)
+    let read: ProviderCatalogRead = if request.kind == MessageKind::ConfigurationQuery {
+        let read: kish_lingshu_runtime_contract::provider::ProviderConfigurationRead =
+            serde_json::from_str(request.payload.get())
+                .map_err(|_| ChannelSessionError::InvalidResponse)?;
+        read.catalog
+    } else {
+        serde_json::from_str(request.payload.get())
+            .map_err(|_| ChannelSessionError::InvalidResponse)?
+    };
+    if !matches!(
+        request.kind,
+        MessageKind::CatalogRead | MessageKind::ConfigurationQuery
+    ) || request.deadline_unix_ms
+        > now.saturating_add(CATALOG_READ_TIMEOUT_MS + MAX_BOOTSTRAP_CLOCK_SKEW_MS)
         || request.deadline_unix_ms > role_expires_at_ms
         || read.provider_key != snapshot.provider
         || read.release != snapshot.release
@@ -118,6 +129,9 @@ pub(super) fn reply(
     now: i64,
 ) -> Result<Vec<u8>, ChannelSessionError> {
     let request = validate_read(snapshot, endpoint, target, bytes, role_expires_at_ms, now)?;
+    if request.kind != MessageKind::CatalogRead {
+        return Err(ChannelSessionError::InvalidResponse);
+    }
     let ServiceEndpoint::Zenoh { route, .. } = endpoint else {
         return Err(ChannelSessionError::InvalidConfig);
     };
@@ -141,29 +155,98 @@ fn sign_reply(
     request: TransportEnvelope,
     now: i64,
 ) -> Result<Vec<u8>, ChannelSessionError> {
+    sign_payload(snapshot.payload.clone(), subject, signer, request, now)
+}
+
+pub(super) async fn configuration_reply(
+    snapshot: &CatalogSnapshot,
+    endpoint: &ServiceEndpoint,
+    target: &ExactRouteKey,
+    bytes: &[u8],
+    role_expires_at_ms: i64,
+    connection: &crate::ServiceConnection,
+    initial: &ChannelBootstrapResponse,
+    signer: &Arc<ChannelMessageSigner>,
+) -> Result<Vec<u8>, ChannelSessionError> {
+    let now = chrono::Utc::now().timestamp_millis();
+    let request = validate_read(snapshot, endpoint, target, bytes, role_expires_at_ms, now)?;
+    if request.kind != MessageKind::ConfigurationQuery {
+        return Err(ChannelSessionError::InvalidResponse);
+    }
+    let claims = connection
+        .verify_channel_message(&initial.transport_trust, &request)
+        .map_err(|_| ChannelSessionError::InvalidResponse)?;
+    validate_read_time(&claims, now)?;
+    let read: kish_lingshu_runtime_contract::provider::ProviderConfigurationRead =
+        serde_json::from_str(request.payload.get())
+            .map_err(|_| ChannelSessionError::InvalidResponse)?;
+    if read.context.application_id != initial.application_id.as_str()
+        || read.context.provider_key != snapshot.provider
+    {
+        return Err(ChannelSessionError::InvalidResponse);
+    }
+    let remaining = request
+        .deadline_unix_ms
+        .saturating_sub(chrono::Utc::now().timestamp_millis());
+    if remaining <= 0 {
+        return Err(ChannelSessionError::AuthorityExpired);
+    }
+    let response = tokio::time::timeout(
+        std::time::Duration::from_millis(remaining as u64),
+        snapshot.configuration.query(&read.context, &read.query),
+    )
+    .await
+    .map_err(|_| ChannelSessionError::AuthorityExpired)?;
+    let payload = serde_json::value::to_raw_value(&response)
+        .map_err(|_| ChannelSessionError::InvalidResponse)?;
+    let ServiceEndpoint::Zenoh { route, .. } = endpoint else {
+        return Err(ChannelSessionError::InvalidConfig);
+    };
+    let subject = ClientChannelIdentity {
+        application_id: initial.application_id.clone(),
+        instance_id: route.instance_id.clone(),
+        base_generation: route.base_generation.clone(),
+        certificate_identity: initial.certificate.certificate_identity.clone(),
+    };
+    sign_payload(
+        payload,
+        &subject,
+        signer,
+        request,
+        chrono::Utc::now().timestamp_millis(),
+    )
+}
+
+fn sign_payload(
+    payload: Box<serde_json::value::RawValue>,
+    subject: &ClientChannelIdentity,
+    signer: &ChannelMessageSigner,
+    request: TransportEnvelope,
+    now: i64,
+) -> Result<Vec<u8>, ChannelSessionError> {
     let parent = request.trace_parent.clone();
     super::trace::scope_sync(parent.as_deref(), || {
         let proof = signer
             .sign_message(
                 subject,
-                MessageKind::CatalogRead,
+                request.kind,
                 &request.target,
                 &request.request_id,
-                snapshot.payload.get().as_bytes(),
+                payload.get().as_bytes(),
                 now,
                 request.deadline_unix_ms,
             )
             .map_err(|_| ChannelSessionError::InvalidResponse)?;
         TransportEnvelope {
             protocol_version: request.protocol_version,
-            kind: MessageKind::CatalogRead,
+            kind: request.kind,
             request_id: request.request_id,
             application_id: subject.application_id.clone(),
             target: request.target,
             deadline_unix_ms: request.deadline_unix_ms,
             proof,
             trace_parent: super::trace::current_trace_parent(),
-            payload: snapshot.payload.clone(),
+            payload,
         }
         .encode(now)
         .map_err(|_| ChannelSessionError::InvalidResponse)
@@ -224,6 +307,7 @@ mod tests {
             unreachable!()
         };
         let catalog = ProviderCatalog {
+            participant_configuration: vec![],
             format_version: 1,
             application_id: "app".into(),
             provider_key: "provider".into(),
@@ -233,6 +317,7 @@ mod tests {
             workflows: vec![],
         };
         let snapshot = CatalogSnapshot {
+            configuration: Default::default(),
             digest: catalog.digest().unwrap(),
             provider: "provider".into(),
             release: "1".into(),
@@ -358,6 +443,141 @@ mod tests {
         assert_eq!(trace.flags(), parent.flags());
         assert_ne!(trace.span_id(), parent.span_id());
         assert!(super::super::trace::current_trace_parent().is_none());
+
+        // Configuration requests use their own signed message kind while binding
+        // the same exact catalog snapshot, route revision and current lane.
+        use kish_lingshu_runtime_contract::participant_configuration::*;
+        let payload = serde_json::value::to_raw_value(&kish_lingshu_runtime_contract::provider::ProviderConfigurationRead {
+            catalog: ProviderCatalogRead { provider_key: "provider".into(), release: "1".into(), catalog_digest: snapshot.digest.clone(), route_revision: *route_revision, lane: lanes[0].clone() },
+            context: ConfigurationQueryContext { application_id: "app".into(), provider_key: "provider".into(), editor_subject: "editor".into() },
+            query: ConfigurationQuery {
+                protocol: PARTICIPANT_CONFIGURATION_PROTOCOL.into(), capability_key: "rules".into(), context_ref: "delegation".into(),
+                compatibility: ParticipantCompatibility { task_type: "review".into(), node_kind: kish_lingshu_runtime_contract::human_task::HumanTaskKind::Todo, claim_policy: kish_lingshu_runtime_contract::human_task::HumanTaskClaimPolicy::Required },
+                operation: ConfigurationOperation::List { search: "".into(), cursor: None, limit: 10 },
+            },
+        }).unwrap();
+        let id = RouteIdentity::new("configuration-read").unwrap();
+        let mut configuration_request = TransportEnvelope {
+            protocol_version: ProtocolVersion::V1,
+            kind: MessageKind::ConfigurationQuery,
+            request_id: id.clone(),
+            application_id: subject.application_id.clone(),
+            target: target.clone(),
+            deadline_unix_ms: now + 5000,
+            proof: platform
+                .sign_transport_message(
+                    "app",
+                    MessageKind::ConfigurationQuery,
+                    &target,
+                    &id,
+                    payload.get().as_bytes(),
+                    now,
+                    now + 5000,
+                )
+                .unwrap(),
+            trace_parent: None,
+            payload,
+        };
+        let checked = validate_read(
+            &snapshot,
+            &endpoint,
+            &target,
+            &configuration_request.encode(now).unwrap(),
+            now + 20000,
+            now,
+        )
+        .unwrap();
+        verify_transport_message(
+            &trust,
+            &checked.proof,
+            "app",
+            checked.kind,
+            &checked.target,
+            &checked.request_id,
+            checked.payload.get().as_bytes(),
+            now,
+        )
+        .unwrap();
+        let result = ConfigurationResponse::Error {
+            code: ConfigurationError::ContextRequired,
+        };
+        let bytes = sign_payload(
+            serde_json::value::to_raw_value(&result).unwrap(),
+            &subject,
+            &signer,
+            checked,
+            now,
+        )
+        .unwrap();
+        let response =
+            TransportEnvelope::decode(&bytes, &target, &subject.application_id, now).unwrap();
+        assert_eq!(response.kind, MessageKind::ConfigurationQuery);
+        assert_eq!(response.request_id, id);
+        verify_client_transport_message(
+            signer.public_key(),
+            &subject,
+            &response.proof,
+            response.kind,
+            &response.target,
+            &response.request_id,
+            response.payload.get().as_bytes(),
+            now,
+        )
+        .unwrap();
+        #[cfg(feature = "service-call-zenoh")]
+        {
+            let fixture = crate::services::execution::tests::fixture(1).await;
+            let initial = super::super::call::tests::authority(&platform, &signer);
+            let request_bytes = configuration_request.encode(now).unwrap();
+            let reply_bytes = configuration_reply(
+                &snapshot,
+                &endpoint,
+                &target,
+                &request_bytes,
+                now + 20000,
+                &fixture.core.connection,
+                &initial,
+                &signer,
+            )
+            .await
+            .unwrap();
+            let reply =
+                TransportEnvelope::decode(&reply_bytes, &target, &subject.application_id, now)
+                    .unwrap();
+            assert_eq!(
+                serde_json::from_str::<ConfigurationResponse>(reply.payload.get()).unwrap(),
+                ConfigurationResponse::Error {
+                    code: ConfigurationError::NotFound
+                }
+            );
+            assert!(
+                configuration_reply(
+                    &snapshot,
+                    &endpoint,
+                    &target,
+                    &request_bytes,
+                    now + 20000,
+                    &fixture.core.connection,
+                    &initial,
+                    &signer
+                )
+                .await
+                .is_err(),
+                "signed configuration replay is rejected"
+            );
+            fixture.core.connection.shutdown().await;
+        }
+        // A message cannot be re-labelled as a catalog read or replayed under it.
+        configuration_request.kind = MessageKind::CatalogRead;
+        assert!(validate_read(
+            &snapshot,
+            &endpoint,
+            &target,
+            &configuration_request.encode(now).unwrap(),
+            now + 20000,
+            now
+        )
+        .is_err());
     }
 
     #[tokio::test]
@@ -367,6 +587,7 @@ mod tests {
         };
         let id = |v: &str| RouteIdentity::new(v).unwrap();
         let catalog = ProviderCatalog {
+            participant_configuration: vec![],
             format_version: 1,
             application_id: "app".into(),
             provider_key: "provider".into(),
@@ -376,6 +597,7 @@ mod tests {
             workflows: vec![],
         };
         let snapshot = CatalogSnapshot {
+            configuration: Default::default(),
             digest: catalog.digest().unwrap(),
             provider: "provider".into(),
             release: "1".into(),
@@ -610,6 +832,7 @@ mod tests {
             .await
             .unwrap();
         let catalog = ProviderCatalog {
+            participant_configuration: vec![],
             format_version: 1,
             application_id: app.clone(),
             provider_key: "native-discovery-source".into(),
@@ -896,7 +1119,8 @@ mod tests {
             .unwrap();
         let registry = builder.build().unwrap();
         let catalog = ProviderCatalog {
-            format_version: 1,
+            participant_configuration: vec![],
+format_version: 1,
             application_id: app.clone(),
             provider_key: "native-import-source".into(),
             release: "1".into(),
@@ -1087,6 +1311,7 @@ mod tests {
             .await
             .unwrap();
         let catalog = ProviderCatalog {
+            participant_configuration: vec![],
             format_version: 1,
             application_id: app.clone(),
             provider_key: "native-catalog-source".into(),

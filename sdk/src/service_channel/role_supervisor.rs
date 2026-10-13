@@ -1019,6 +1019,7 @@ mod tests {
         assert_eq!(pool.session_ids().len(), config.session_count());
         let original_sessions = pool.session_ids();
         let catalog = |key: &str| kish_lingshu_runtime_contract::provider::ProviderCatalog {
+            participant_configuration: vec![],
             format_version: 1,
             application_id: app.clone(),
             provider_key: key.into(),
@@ -1236,6 +1237,7 @@ mod tests {
             .await
             .unwrap();
         let catalog = |key: &str| kish_lingshu_runtime_contract::provider::ProviderCatalog {
+            participant_configuration: vec![],
             format_version: 1,
             application_id: app.clone(),
             provider_key: key.into(),
@@ -1377,6 +1379,7 @@ mod tests {
             .await
             .unwrap();
         let mut catalog = kish_lingshu_runtime_contract::provider::ProviderCatalog {
+            participant_configuration: vec![],
             format_version: 1,
             application_id: app,
             provider_key: "managed-first".into(),

@@ -35,7 +35,11 @@ use kish_lingshu_runtime_contract::{
 
 #[cfg(all(test, feature = "http-client"))]
 mod observation_tests;
+mod published;
 mod records;
+pub use kish_lingshu_runtime_contract::workflow_catalog::{
+    PublishedWorkflowDefinition, PublishedWorkflowPage,
+};
 pub use records::{
     AgentTaskPlan, ConversationScope, SessionMessage, SessionRecord, TaskPlanItem,
     TaskPlanItemStatus, WorkflowRecord,
@@ -390,6 +394,30 @@ impl<P: Principal> Workflows<P> {
             .binding
             .workflow_snapshot(workflow_instance_id, options)
             .await
+    }
+
+    /// Terminate an owned durable instance without attaching an event observer.
+    /// A suspended or evicted runner may have no live subscription cursor.
+    pub async fn terminate(
+        &self,
+        workflow_instance_id: WorkflowInstanceId,
+        reason: Option<String>,
+        options: MutationOptions,
+    ) -> Result<CommandAck, Error> {
+        if workflow_instance_id.0 == 0 {
+            return Err(Error::configuration(
+                "workflow_instance_id",
+                "Workflow Instance identity must be positive",
+            ));
+        }
+        let request_id = options.request().request_id().clone();
+        let ack = self
+            .inner
+            .binding
+            .terminate_workflow(workflow_instance_id, reason, None, options)
+            .await?;
+        validate_ack(&ack, workflow_instance_id, request_id)?;
+        Ok(ack)
     }
 
     /// Reattach using the durable Workflow snapshot without replaying a command.

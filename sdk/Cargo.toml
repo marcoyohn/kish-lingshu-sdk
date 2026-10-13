@@ -1,6 +1,6 @@
 [package]
 name = "kish-lingshu-sdk"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Rust SDK for Kish Lingshu application integrations"
@@ -49,7 +49,8 @@ service-auth-core = [
   "kish-lingshu-foundation-contract/service-auth",
 ]
 # HTTPS credential preparation only; does not enable a business transport or listener.
-service-channel = ["dep:zenss-client-sdk", "service-auth-core", "kish-lingshu-runtime-contract/service-transport", "dep:rcgen"]
+participant-configuration = ["service-manifest", "dep:tokio"]
+service-channel = ["participant-configuration", "dep:zenss-client-sdk", "service-auth-core", "kish-lingshu-runtime-contract/service-transport", "dep:rcgen"]
 # Finite outbound TLS sessions only; route/role activation remains separate.
 service-zenoh = ["service-channel", "dep:base64", "dep:metrics", "dep:zenoh", "dep:tracing", "dep:tracing-subscriber"]
 # Explicit authenticated, unencrypted private-network profile; never a fallback.
@@ -81,7 +82,7 @@ jsonschema = { workspace = true, optional = true }
 kish-lingshu-event-dispatch-contract = { workspace = true }
 kish-lingshu-foundation-contract = { workspace = true }
 kish-lingshu-runtime-contract = { workspace = true }
-kish-lingshu-sdk-macros = { path = "macros", version = "=0.8.0", optional = true }
+kish-lingshu-sdk-macros = { path = "macros", version = "=0.9.0", optional = true }
 metrics = { workspace = true, optional = true }
 percent-encoding = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }

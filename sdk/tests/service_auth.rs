@@ -1126,6 +1126,7 @@ async fn hundred_groups_call_and_provider_share_one_heartbeat_and_role_rejection
     let provider = ProviderHttpAdapter::new(
         connection.clone(),
         ProviderCatalog {
+            participant_configuration: vec![],
             format_version: 1,
             application_id: APP.into(),
             provider_key: "provider".into(),

@@ -39,6 +39,9 @@ pub struct ProviderCatalog {
     pub events: Option<EventDispatchManifestV1>,
     #[serde(default)]
     pub workflows: Vec<ProviderWorkflow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub participant_configuration:
+        Vec<crate::participant_configuration::ParticipantConfigurationCapability>,
 }
 impl ProviderCatalog {
     pub fn validate(&self) -> Result<(), String> {
@@ -61,6 +64,16 @@ impl ProviderCatalog {
             events.verify_digest().map_err(|e| e.to_string())?;
         }
         let mut keys = BTreeSet::new();
+        if self.participant_configuration.len() > 64 {
+            return Err("too many configuration capabilities".into());
+        }
+        for capability in &self.participant_configuration {
+            capability.validate().map_err(|e| e.to_string())?;
+            if !keys.insert(&capability.key) {
+                return Err("duplicate configuration capability".into());
+            }
+        }
+        keys.clear();
         for workflow in &self.workflows {
             if !valid_key(&workflow.key)
                 || workflow.name.trim().is_empty()
@@ -79,6 +92,9 @@ impl ProviderCatalog {
         self.validate()?;
         let mut normalized = self.clone();
         normalized.workflows.sort_by(|a, b| a.key.cmp(&b.key));
+        normalized
+            .participant_configuration
+            .sort_by(|a, b| a.key.cmp(&b.key));
         if let Some(services) = &mut normalized.services {
             services.normalize();
         }
@@ -257,6 +273,7 @@ mod tests {
             define_schema: BTreeMap::from([("nodes".into(), serde_json::json!([]))]),
         };
         let mut catalog = ProviderCatalog {
+            participant_configuration: vec![],
             format_version: 1,
             application_id: "app".into(),
             provider_key: "backend".into(),

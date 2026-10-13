@@ -532,6 +532,7 @@ mod tests {
             .unwrap();
         assert!(old.finalize_certificate_rotation().await.is_err());
         let catalog = |key: &str| kish_lingshu_runtime_contract::provider::ProviderCatalog {
+            participant_configuration: vec![],
             format_version: 1,
             application_id: app.clone(),
             provider_key: key.into(),
@@ -661,6 +662,7 @@ mod tests {
             .await
             .unwrap();
         let catalog = |key: &str| kish_lingshu_runtime_contract::provider::ProviderCatalog {
+            participant_configuration: vec![],
             format_version: 1,
             application_id: app.clone(),
             provider_key: key.into(),
@@ -901,6 +903,7 @@ mod tests {
             .await
             .unwrap();
         let catalog = kish_lingshu_runtime_contract::provider::ProviderCatalog {
+            participant_configuration: vec![],
             format_version: 1,
             application_id: app,
             provider_key: "rotation-original".into(),

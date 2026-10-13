@@ -3,12 +3,12 @@ use std::{fmt, marker::PhantomData, sync::Arc};
 use kish_lingshu_runtime_contract::{PrincipalKind, ProductRuntimeFacade, TrustedContextFactory};
 
 use crate::{
+    AuthenticatedUser, Error, RequestOptions, ServiceCredential, UserCredential,
     auth::ClientCredential,
     binding::{BindingRef, ProductRuntimeBinding},
     config::ClientConfig,
     event_dispatch::EventDispatch,
     workflow::Workflows,
-    AuthenticatedUser, Error, RequestOptions, ServiceCredential, UserCredential,
 };
 
 #[cfg(feature = "http-client")]
@@ -144,6 +144,50 @@ impl ClientBuilder<NoPrincipal> {
             credential: Some(ClientCredential::User(credential)),
             principal: PhantomData,
         }
+    }
+}
+
+impl ClientBuilder<ServicePrincipal> {
+    /// Exchange trusted application authority for one authenticated business user
+    /// on one task. Keep this credential server-side; it expires in 30 seconds.
+    #[cfg(feature = "http-client")]
+    pub async fn delegate_human_task_user(
+        self,
+        authority: kish_lingshu_runtime_contract::human_task::HumanTaskUserDelegation,
+        options: RequestOptions,
+    ) -> Result<Client<UserPrincipal>, Error> {
+        self.config.validate(PrincipalKind::Service, true)?;
+        let credential = self.credential.ok_or_else(|| {
+            Error::configuration("credential", "a service credential is required")
+        })?;
+        let app = credential
+            .service_application_id()
+            .ok_or_else(|| Error::configuration("credential", "application authority required"))?
+            .to_owned();
+        let binding = HttpBinding::new(&self.config, credential, PrincipalKind::Service)?;
+        let response = binding
+            .delegate_human_task_user(&authority, options)
+            .await?;
+        let now = chrono::Utc::now().timestamp();
+        // The server signs a 30-second lifetime. Allow five seconds of clock
+        // skew when checking the response; server-side verification remains exact.
+        if response.application_id != app
+            || response.authority != authority
+            || response.expires_at <= now
+            || response.expires_at > now + 35
+            || !response.credential.starts_with("human:")
+        {
+            return Err(Error::contract(
+                "delegated authority does not match request",
+                None,
+            ));
+        }
+        ClientBuilder::new(self.config.with_selected_application(app))
+            .user_credential(
+                UserCredential::new(response.credential)
+                    .map_err(|_| Error::contract("invalid delegated credential", None))?,
+            )
+            .connect()
     }
 }
 

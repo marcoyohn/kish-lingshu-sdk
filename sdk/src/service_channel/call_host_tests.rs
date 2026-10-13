@@ -471,7 +471,8 @@ async fn native_workflow_with_parallel(
     }).unwrap();
     let registry = Arc::new(builder.build().unwrap());
     let mut catalog = ProviderCatalog {
-        format_version: 1, application_id: app.clone(), provider_key: source, release: "1".into(),
+        participant_configuration: vec![],
+format_version: 1, application_id: app.clone(), provider_key: source, release: "1".into(),
         services: Some(manifest), events: None, workflows: vec![ProviderWorkflow {
             key: workflow_key.clone(), name: workflow_name.into(), description: None,
             define_schema: serde_json::from_value(serde_json::json!({"type":"ReactFlow","config":{"reactflow":{

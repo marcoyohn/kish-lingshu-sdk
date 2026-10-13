@@ -48,6 +48,8 @@ pub struct RequestContext {
     idempotency_key: Option<IdempotencyKey>,
     trace: Option<TraceContext>,
     deadline: Option<RequestDeadline>,
+    #[serde(skip)]
+    human_task_authority: Option<crate::human_task::HumanTaskUserDelegation>,
 }
 
 impl RequestContext {
@@ -68,7 +70,12 @@ impl RequestContext {
             idempotency_key: None,
             trace: None,
             deadline: None,
+            human_task_authority: None,
         }
+    }
+
+    pub fn human_task_authority(&self) -> Option<&crate::human_task::HumanTaskUserDelegation> {
+        self.human_task_authority.as_ref()
     }
 
     pub fn actor_id(&self) -> &str {
@@ -125,6 +132,7 @@ pub struct RequestContextBuilder {
     idempotency_key: Option<IdempotencyKey>,
     trace: Option<TraceContext>,
     deadline: Option<RequestDeadline>,
+    human_task_authority: Option<crate::human_task::HumanTaskUserDelegation>,
 }
 
 /// Factory configured by a trusted Adapter or in-process composition root.
@@ -259,6 +267,14 @@ impl RequestContextBuilder {
         self
     }
 
+    pub fn human_task_authority(
+        mut self,
+        authority: crate::human_task::HumanTaskUserDelegation,
+    ) -> Self {
+        self.human_task_authority = Some(authority);
+        self
+    }
+
     pub fn build(self) -> RuntimeResult<RequestContext> {
         validate_non_empty("actor_id", &self.actor_id)?;
         validate_non_empty("request_id", self.request_id.as_ref())?;
@@ -298,6 +314,7 @@ impl RequestContextBuilder {
             idempotency_key: self.idempotency_key,
             trace: self.trace,
             deadline: self.deadline,
+            human_task_authority: self.human_task_authority,
         })
     }
 }

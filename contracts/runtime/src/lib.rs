@@ -15,6 +15,7 @@ mod facade;
 pub mod human_task;
 mod identity;
 mod pagination;
+pub mod participant_configuration;
 mod ports;
 mod problem;
 mod request;
@@ -24,6 +25,7 @@ pub mod service;
 mod suspension;
 pub mod user_context;
 mod workflow;
+pub mod workflow_catalog;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;

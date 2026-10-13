@@ -154,6 +154,7 @@ fn registration_catalog_contains_only_bound_handlers_and_preserves_source_identi
         })
         .unwrap();
     let catalog = ProviderCatalog {
+        participant_configuration: vec![],
         format_version: 1,
         application_id: "orders-app".into(),
         provider_key: "orders-provider".into(),

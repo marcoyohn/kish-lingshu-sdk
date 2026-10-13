@@ -264,6 +264,7 @@ async fn pressure(count: usize) {
     ));
     // Near-4MiB immutable catalog is shared, independent of the lane count.
     let catalog = ProviderCatalog {
+        participant_configuration: vec![],
         format_version: 1,
         application_id: "app".into(),
         provider_key: "pressure".into(),

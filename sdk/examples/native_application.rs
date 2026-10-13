@@ -69,6 +69,7 @@ fn env(key: &str) -> ExampleResult<String> {
 async fn main() -> ExampleResult<()> {
     let app = env("LINGSHU_APPLICATION_ID")?;
     let catalog = ProviderCatalog {
+        participant_configuration: vec![],
         format_version: 1,
         application_id: app.clone(),
         provider_key: "native-example".into(),

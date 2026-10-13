@@ -351,6 +351,7 @@ pub enum MessageKind {
     /// Product-internal direct Router report installation; never a Client grant.
     InstallCallReport,
     CatalogRead,
+    ConfigurationQuery,
     ConsumerRegistrationChanged,
     InvokeCall,
     CancelCall,
@@ -367,6 +368,7 @@ impl MessageKind {
         match self {
             Self::Register | Self::RenewRoles => MAX_CONTROL_PAYLOAD_BYTES,
             Self::CatalogRead => MAX_CATALOG_PAYLOAD_BYTES,
+            Self::ConfigurationQuery => 128 * 1024,
             _ => MAX_BUSINESS_PAYLOAD_BYTES,
         }
     }

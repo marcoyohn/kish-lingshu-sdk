@@ -42,6 +42,15 @@ pub(crate) type WorkflowEventStream =
 /// principal, while construction selects HTTP or an in-process runtime.
 #[async_trait]
 pub(crate) trait ProductBinding: Send + Sync {
+    async fn list_published_workflows(&self, _after:Option<u64>, _limit:u32, _options:RequestOptions)
+      -> Result<kish_lingshu_runtime_contract::workflow_catalog::PublishedWorkflowPage,Error> {
+        Err(Error::configuration("published_workflows", "This binding does not support published Workflow discovery"))
+    }
+    async fn get_published_workflow(&self, _workflow:u64, _definition:u64, _options:RequestOptions)
+      -> Result<kish_lingshu_runtime_contract::workflow_catalog::PublishedWorkflowDefinition,Error> {
+        Err(Error::configuration("published_workflows", "This binding does not support published Workflow discovery"))
+    }
+
     async fn list_human_tasks(
         &self,
         instance: WorkflowInstanceId,

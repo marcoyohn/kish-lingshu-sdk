@@ -423,6 +423,7 @@ mod fault_tests {
                 roles.push(
                     pool.register_provider_role(
                         &kish_lingshu_runtime_contract::provider::ProviderCatalog {
+                            participant_configuration: vec![],
                             format_version: 1,
                             application_id: app.clone(),
                             provider_key: format!("traffic-{count}-{index}"),
@@ -582,6 +583,7 @@ mod fault_tests {
             },
             Some(RouteIdentity::new("dev").unwrap()),
             kish_lingshu_runtime_contract::provider::ProviderCatalog {
+                participant_configuration: vec![],
                 format_version: 1,
                 application_id: app,
                 provider_key: "connected-runtime-source".into(),
@@ -679,6 +681,7 @@ mod fault_tests {
             .unwrap();
         let mut provider = pool
             .register_provider_role(&kish_lingshu_runtime_contract::provider::ProviderCatalog {
+                participant_configuration: vec![],
                 format_version: 1,
                 application_id: app,
                 provider_key: "connected-fault-source".into(),

@@ -1,5 +1,5 @@
 //! External human work: execution identity belongs to Workflow, business data to the provider.
-use crate::{service::*, ApplicationResult, IdempotencyKey, RequestContext, WorkflowInstanceId};
+use crate::{ApplicationResult, IdempotencyKey, RequestContext, WorkflowInstanceId, service::*};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -88,6 +88,8 @@ pub struct HumanTaskConfig {
     pub task_type: String,
     #[serde(default)]
     pub claim_policy: HumanTaskClaimPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub participant_selector: Option<crate::participant_configuration::ParticipantSelector>,
     pub hooks: BTreeMap<HumanTaskAction, HumanTaskHookBinding>,
     #[serde(default)]
     pub withdrawal: Option<HumanTaskWithdrawal>,
@@ -113,6 +115,14 @@ impl HumanTaskConfig {
                 "invalid_human_protocol",
                 "Explicit external_v1 and task_type are required",
             ));
+        }
+        if let Some(selector) = &self.participant_selector {
+            if kind == HumanTaskKind::Draft || selector.validate().is_err() {
+                return Err(ServiceError::rejected(
+                    "invalid_participant_selector",
+                    "Invalid participant rule reference",
+                ));
+            }
         }
         let mut required = vec![HumanTaskAction::Create, HumanTaskAction::Cancel];
         if kind != HumanTaskKind::Read {
@@ -177,6 +187,8 @@ pub struct HumanTaskInvocation {
     pub principal: crate::PrincipalKind,
     pub initiator_id: String,
     pub business_ref: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub participant_selector: Option<crate::participant_configuration::ParticipantSelector>,
     #[serde(default)]
     pub external_ref: Option<String>,
     #[serde(default)]
@@ -194,6 +206,16 @@ impl HumanTaskInvocation {
         call: &CallContext,
         definition: &HumanTaskDefinition,
     ) -> Result<(), ServiceError> {
+        if self
+            .participant_selector
+            .as_ref()
+            .is_some_and(|s| s.validate().is_err())
+        {
+            return Err(ServiceError::rejected(
+                "invalid_participant_selector",
+                "Invalid participant rule reference",
+            ));
+        }
         if self.protocol != HUMAN_TASK_PROTOCOL
             || self.application_id != context.application_id
             || self.idempotency_key != context.idempotency_key
@@ -428,5 +450,27 @@ mod tests {
             "interaction_type": "approval.v1", "action": "create", "node_kinds": ["draft"]
         });
         assert!(serde_json::from_value::<HumanTaskDefinition>(definition).is_err());
+    }
+}
+
+/// Trusted business-backend identity delegation, never a decision-form actor.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HumanTaskUserDelegation {
+    pub subject: String,
+    pub workflow_instance_id: WorkflowInstanceId,
+    pub task_id: String,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HumanTaskUserCredential {
+    pub application_id: String,
+    pub authority: HumanTaskUserDelegation,
+    pub expires_at: i64,
+    pub credential: String,
+}
+impl std::fmt::Debug for HumanTaskUserCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HumanTaskUserCredential([REDACTED])")
     }
 }

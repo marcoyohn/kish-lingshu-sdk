@@ -56,6 +56,27 @@ Local Workspace/Sandbox execution, permission journals and CLI presentation belo
 to the source product and are not part of the public SDK export.
 
 
+### v0.9.0
+
+Adds the `participant-configuration` feature and authenticated native rule
+list/validate queries with immutable references and provider-issued design grants.
+Workflow definition reads select current or exact published revisions and preserve
+application ownership. Applications can terminate a durable instance without an
+observer cursor.
+
+`ClientBuilder<ServicePrincipal>::delegate_human_task_user` exchanges application
+credentials for a 30-second, application/subject/instance/task-scoped user client.
+Keep the credential in backend memory; business applications still authorize the
+actor, candidates and resource scope. The matching server verifies the parent key
+on every request and restricts this credential to explicit human-task routes.
+Management links resolve through the server's trusted site registry rather than
+accepting arbitrary provider URLs.
+
+SDK/macros/SQLx journal are v0.9.0, Runtime contracts v0.5.0, Foundation contracts
+v0.4.0; unchanged Event Dispatch contracts remain v0.3.1. Use one public commit
+for every package. The matching Lingshu server is required; the SDK release alone
+does not upgrade a deployed server or verify production business workflows.
+
 ### v0.8.0
 
 Breaking release: workflow user tasks and draft nodes integrate with external

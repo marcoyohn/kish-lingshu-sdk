@@ -1,13 +1,14 @@
 //! Human tasks in workflow instances: draft editing, approval and reading steps.
 //! Execution observations and durable command receipts; business inboxes remain external.
 use crate::{
-    client::ClientInner, Error, Principal, RequestOptions, ServicePrincipal, UserPrincipal,
+    Error, Principal, RequestOptions, ServicePrincipal, UserPrincipal, client::ClientInner,
 };
+use kish_lingshu_runtime_contract::WorkflowInstanceId;
 pub use kish_lingshu_runtime_contract::human_task::{
     HumanTaskAction, HumanTaskCommand, HumanTaskCommandReceipt, HumanTaskCommandState,
     HumanTaskCommandStatus, HumanTaskKind, HumanTaskPhase, HumanTaskProblem, HumanTaskSnapshot,
+    HumanTaskUserDelegation,
 };
-use kish_lingshu_runtime_contract::WorkflowInstanceId;
 use std::{marker::PhantomData, sync::Arc};
 #[derive(Clone)]
 pub struct HumanTasks<P: Principal> {
@@ -174,10 +175,10 @@ fn protocol(message: &str) -> Error {
 mod tests {
     use super::*;
     use axum::{
+        Json, Router,
         extract::{Path, State},
         http::StatusCode,
         routing::{get, post},
-        Json, Router,
     };
     use serde_json::json;
     #[derive(Clone)]

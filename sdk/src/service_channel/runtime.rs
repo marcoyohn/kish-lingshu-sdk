@@ -55,6 +55,7 @@ pub struct RegisteredServiceRuntime {
     rotation: Option<ChannelCertificateRotationConfig>,
     connection_lifecycle: bool,
     catalog: Arc<ProviderCatalog>,
+    configuration: crate::participant_configuration::ParticipantConfigurationRegistry,
     #[cfg(feature = "service-call-zenoh")]
     calls: Option<RegisteredCallPlan>,
     #[cfg(feature = "event-consumer-zenoh")]
@@ -81,6 +82,7 @@ impl RegisteredServiceRuntime {
             instance,
             deployment,
             catalog: Arc::new(catalog),
+            configuration: Default::default(),
             sessions,
             transport: ChannelTransport::Mtls,
             rotation: Some(ChannelCertificateRotationConfig::default()),
@@ -93,6 +95,14 @@ impl RegisteredServiceRuntime {
     }
     pub fn with_transport(mut self, transport: ChannelTransport) -> Self {
         self.transport = transport;
+        self
+    }
+    pub fn with_participant_configuration(
+        mut self,
+        registry: crate::participant_configuration::ParticipantConfigurationRegistry,
+    ) -> Self {
+        Arc::make_mut(&mut self.catalog).participant_configuration = registry.capabilities();
+        self.configuration = registry;
         self
     }
     /// Requires matched Host/platform and event-driven ZenSS client artifacts.
@@ -201,7 +211,10 @@ impl RegisteredServiceRuntime {
                 return Err(error.into());
             }
         }
-        let provider = match pool.register_provider_role(&self.catalog).await {
+        let provider = match pool
+            .register_provider_role_with_configuration(&self.catalog, self.configuration.clone())
+            .await
+        {
             Ok(provider) => provider,
             Err(error) => {
                 pool.close().await?;

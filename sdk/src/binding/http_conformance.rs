@@ -1,8 +1,6 @@
-use std::{
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
-    },
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
 };
 
 use axum::{
@@ -20,12 +18,11 @@ use kish_lingshu_event_dispatch_contract::{
 use kish_lingshu_runtime_contract::{
     ApplicationProblem, ApplicationResult, CommandDisposition, EventCursor,
     EventId as WorkflowEventId, IdempotencyKey, InvocationSource, MutationDisposition,
-    PrincipalKind, ProductRuntimeFacade, RequestContext,
-    RootWorkflowInstanceId, RuntimeBindings, RuntimeError, RuntimeErrorCode, RuntimeResult,
-    SessionId, SignalWorkflowRequest, StartWorkflowRequest, SubscribeWorkflowRequest,
-    TerminateWorkflowRequest, TrustedContextFactory, WorkflowContext, WorkflowEvent,
-    WorkflowEventKind, WorkflowId, WorkflowInput, WorkflowInstanceId, WorkflowSignal,
-    WorkflowSnapshotRequest,
+    PrincipalKind, ProductRuntimeFacade, RequestContext, RootWorkflowInstanceId, RuntimeBindings,
+    RuntimeError, RuntimeErrorCode, RuntimeResult, SessionId, SignalWorkflowRequest,
+    StartWorkflowRequest, SubscribeWorkflowRequest, TerminateWorkflowRequest,
+    TrustedContextFactory, WorkflowContext, WorkflowEvent, WorkflowEventKind, WorkflowId,
+    WorkflowInput, WorkflowInstanceId, WorkflowSignal, WorkflowSnapshotRequest,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -35,7 +32,6 @@ use crate::{
     auth::ClientCredential, ClientConfig, MutationOptions, RequestOptions, ServiceCredential,
     UserCredential,
 };
-
 
 #[derive(Debug, Eq, PartialEq)]
 struct BindingContractReport {
@@ -59,6 +55,61 @@ async fn http_and_product_runtime_bindings_pass_the_same_capability_contract() {
     let actual = assert_binding_contract(remote.0, remote.1).await;
 
     assert_eq!(actual, expected);
+}
+
+#[tokio::test]
+async fn public_http_instance_termination_does_not_require_an_observer_handle() {
+    let fixture =
+        kish_lingshu_runtime_contract::test_support::ContractProductRuntimeFixture::default();
+    let server = MockProductRuntimeServer::start(fixture.facade).await;
+    let client = crate::ClientBuilder::new(
+        ClientConfig::new(server.endpoint()).with_selected_application("contract-app"),
+    )
+    .user_credential(UserCredential::new("user-secret").unwrap())
+    .connect()
+    .unwrap();
+    let started = client
+        .workflows()
+        .start(
+            WorkflowId(42),
+            crate::workflow::WorkflowStart::structured(json!({"prompt":"terminate"}))
+                .in_session(SessionId(7)),
+            MutationOptions::new("detached/start").unwrap(),
+        )
+        .await
+        .unwrap();
+    let id = started.handle().workflow_instance_id;
+    drop(started);
+    assert!(matches!(
+        client
+            .workflows()
+            .terminate(
+                WorkflowInstanceId(0),
+                None,
+                MutationOptions::new("detached/zero").unwrap()
+            )
+            .await,
+        Err(crate::Error::Configuration(_))
+    ));
+    let ack = client
+        .workflows()
+        .terminate(
+            id,
+            Some("durable cancellation".into()),
+            MutationOptions::new("detached/terminate").unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ack.workflow_instance_id, id);
+    let snapshot = client
+        .workflows()
+        .snapshot(id, RequestOptions::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        snapshot.state,
+        kish_lingshu_runtime_contract::WorkflowState::Terminated
+    );
 }
 
 #[tokio::test]
@@ -823,36 +874,103 @@ async fn human_task_http_binding_uses_unified_routes_and_wire_fields() {
         "command_id":"command-1", "operation_id":"operation-1", "task_revision":2, "state":"accepted"
     });
     let list = json!([snapshot.clone()]);
-    let status = json!({"receipt":receipt.clone(), "state":"applied", "action":"save", "problem":null});
+    let status =
+        json!({"receipt":receipt.clone(), "state":"applied", "action":"save", "problem":null});
     let retry_receipt = receipt.clone();
     let routes = Router::new()
-        .route("/openapi/workflow-instances/42/human-tasks", get(move || async move { Json(list) }))
-        .route("/openapi/workflow-instances/42/human-tasks/draft-1", get(move || async move { Json(snapshot) }))
-        .route("/openapi/workflow-instances/42/human-tasks/draft-1/commands", post(move |Json(command): Json<HumanTaskCommand>| async move {
-            assert_eq!(command.action, HumanTaskAction::Save);
-            assert_eq!(command.expected_revision, 1);
-            (StatusCode::ACCEPTED, Json(receipt))
-        }))
-        .route("/openapi/workflow-instances/42/human-tasks/draft-1/commands/command-1", get(move || async move { Json(status) }))
-        .route("/openapi/workflow-instances/42/human-tasks/draft-1/commands/command-1/retry", post(move || async move { (StatusCode::ACCEPTED, Json(retry_receipt)) }));
+        .route(
+            "/openapi/workflow-instances/42/human-tasks",
+            get(move || async move { Json(list) }),
+        )
+        .route(
+            "/openapi/workflow-instances/42/human-tasks/draft-1",
+            get(move || async move { Json(snapshot) }),
+        )
+        .route(
+            "/openapi/workflow-instances/42/human-tasks/draft-1/commands",
+            post(move |Json(command): Json<HumanTaskCommand>| async move {
+                assert_eq!(command.action, HumanTaskAction::Save);
+                assert_eq!(command.expected_revision, 1);
+                (StatusCode::ACCEPTED, Json(receipt))
+            }),
+        )
+        .route(
+            "/openapi/workflow-instances/42/human-tasks/draft-1/commands/command-1",
+            get(move || async move { Json(status) }),
+        )
+        .route(
+            "/openapi/workflow-instances/42/human-tasks/draft-1/commands/command-1/retry",
+            post(move || async move { (StatusCode::ACCEPTED, Json(retry_receipt)) }),
+        );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
-    let server = tokio::spawn(async move { axum::serve(listener, routes).await.unwrap(); });
-    let user = crate::ClientBuilder::new(ClientConfig::new(&endpoint).with_selected_application("contract-app"))
-        .user_credential(UserCredential::new("user-secret").unwrap()).connect().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, routes).await.unwrap();
+    });
+    let user = crate::ClientBuilder::new(
+        ClientConfig::new(&endpoint).with_selected_application("contract-app"),
+    )
+    .user_credential(UserCredential::new("user-secret").unwrap())
+    .connect()
+    .unwrap();
     let tasks = user.human_tasks();
     let instance = WorkflowInstanceId(42);
-    assert_eq!(tasks.list(instance, RequestOptions::new()).await.unwrap()[0].task_type, "approval.v1");
-    assert_eq!(tasks.get(instance, "draft-1", RequestOptions::new()).await.unwrap().task_revision, 1);
+    assert_eq!(
+        tasks.list(instance, RequestOptions::new()).await.unwrap()[0].task_type,
+        "approval.v1"
+    );
+    assert_eq!(
+        tasks
+            .get(instance, "draft-1", RequestOptions::new())
+            .await
+            .unwrap()
+            .task_revision,
+        1
+    );
     let command = HumanTaskCommand {
-        action: HumanTaskAction::Save, expected_revision: 1,
-        idempotency_key: IdempotencyKey::new("save-1").unwrap(), input: json!({}), expected_business_revision: None,
+        action: HumanTaskAction::Save,
+        expected_revision: 1,
+        idempotency_key: IdempotencyKey::new("save-1").unwrap(),
+        input: json!({}),
+        expected_business_revision: None,
     };
-    assert_eq!(tasks.command(instance, "draft-1", command, RequestOptions::new()).await.unwrap().task_revision, 2);
-    assert_eq!(tasks.command_status(instance, "draft-1", "command-1", RequestOptions::new()).await.unwrap().state, crate::human_tasks::HumanTaskCommandState::Applied);
+    assert_eq!(
+        tasks
+            .command(instance, "draft-1", command, RequestOptions::new())
+            .await
+            .unwrap()
+            .task_revision,
+        2
+    );
+    assert_eq!(
+        tasks
+            .command_status(instance, "draft-1", "command-1", RequestOptions::new())
+            .await
+            .unwrap()
+            .state,
+        crate::human_tasks::HumanTaskCommandState::Applied
+    );
     let service = crate::ClientBuilder::new(ClientConfig::new(&endpoint))
-        .service_credential(ServiceCredential::new("contract-app", "service-secret").unwrap()).connect().unwrap();
-    assert_eq!(service.human_tasks().retry(instance, "draft-1", "command-1", RequestOptions::new()).await.unwrap().operation_id, "operation-1");
-    assert_eq!(reqwest::get(format!("{endpoint}/openapi/workflow-instances/42/interactions")).await.unwrap().status(), StatusCode::NOT_FOUND);
+        .service_credential(ServiceCredential::new("contract-app", "service-secret").unwrap())
+        .connect()
+        .unwrap();
+    assert_eq!(
+        service
+            .human_tasks()
+            .retry(instance, "draft-1", "command-1", RequestOptions::new())
+            .await
+            .unwrap()
+            .operation_id,
+        "operation-1"
+    );
+    assert_eq!(
+        reqwest::get(format!(
+            "{endpoint}/openapi/workflow-instances/42/interactions"
+        ))
+        .await
+        .unwrap()
+        .status(),
+        StatusCode::NOT_FOUND
+    );
     server.abort();
 }

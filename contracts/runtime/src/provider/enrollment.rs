@@ -21,8 +21,28 @@ pub struct ProviderCatalogRead {
     pub lane: kish_lingshu_foundation_contract::service_transport::LaneIdentity,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderConfigurationRead {
+    pub catalog: ProviderCatalogRead,
+    pub context: crate::participant_configuration::ConfigurationQueryContext,
+    pub query: crate::participant_configuration::ConfigurationQuery,
+}
+
 #[async_trait::async_trait]
 pub trait ProviderCatalogReader: Send + Sync {
+    async fn query_configuration(
+        &self,
+        _application: &str,
+        _instance: &ProviderInstanceV2,
+        _context: &crate::participant_configuration::ConfigurationQueryContext,
+        _query: &crate::participant_configuration::ConfigurationQuery,
+    ) -> Result<
+        crate::participant_configuration::ConfigurationResponse,
+        kish_lingshu_foundation_contract::service_transport::TransportFailureKind,
+    > {
+        Err(kish_lingshu_foundation_contract::service_transport::TransportFailureKind::ProtocolRejected)
+    }
     /// The caller has selected this exact registered instance. Implementations
     /// must check current authority and return a single authenticated snapshot.
     async fn read(

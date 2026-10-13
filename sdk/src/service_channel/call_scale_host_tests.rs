@@ -98,7 +98,8 @@ async fn native_scale_out_retains_old_sessions_and_distributes_calls_with_shared
         .reference("scale-fixture")
         .unwrap();
     let catalog=ProviderCatalog {
-        format_version:1,application_id:app.clone(),provider_key:"scale-source".into(),release:"1".into(),
+        participant_configuration: vec![],
+format_version:1,application_id:app.clone(),provider_key:"scale-source".into(),release:"1".into(),
         services:Some(manifest.clone()),events:None,workflows:vec![ProviderWorkflow {
             key:"scale".into(),name:"Native Kubernetes scale Workflow".into(),description:None,
             define_schema:serde_json::from_value(serde_json::json!({"type":"ReactFlow","config":{"reactflow":{
