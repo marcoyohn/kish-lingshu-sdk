@@ -87,6 +87,9 @@ impl RoutingConfig {
         params
             .and_then(|p| p.get(ROUTING_KEY))
             .map(|value| {
+                if value.get("backend").is_some() {
+                    return Err("Model routing backend is deployment-wide; remove backend from __lingshu_routing and use global llm_routing.backend".into());
+                }
                 let config: Self = serde_json::from_value(value.clone())
                     .map_err(|e| format!("Invalid model routing: {e}"))?;
                 config.validate()?;
@@ -200,6 +203,11 @@ mod tests {
         let parse =
             |v: Value| RoutingConfig::from_params(Some(&serde_json::json!({ROUTING_KEY:v})));
         assert!(parse(v.clone()).unwrap().is_some());
+        v["backend"] = "memory".into();
+        assert!(parse(v.clone())
+            .unwrap_err()
+            .contains("global llm_routing.backend"));
+        v.as_object_mut().unwrap().remove("backend");
         v["targets"][0]["accounts"][0]["api_key"] = "secret".into();
         assert!(parse(v.clone()).is_err());
         v["targets"][0]["accounts"][0]

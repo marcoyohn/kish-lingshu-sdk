@@ -56,6 +56,20 @@ Local Workspace/Sandbox execution, permission journals and CLI presentation belo
 to the source product and are not part of the public SDK export.
 
 
+### v0.10.1
+
+Preserves the v0.10.0 notification dispatcher and native application APIs.
+Runtime routing validation now rejects a per-request `backend` inside
+`__lingshu_routing`; configure the deployment-wide `llm_routing.backend` instead.
+This snapshot matches source main containing native notification route binding
+and Workflow recovery/cleanup fixes; those server changes require a separate
+plugin deployment and are not distributed as client SDK code.
+
+SDK/macros/SQLx journal are v0.10.1 and Runtime contracts v0.5.1. Foundation
+contracts remain v0.5.0 and Event Dispatch contracts v0.3.1. Pin every package
+to the same public commit. Earlier native browser evidence used v0.10.0;
+this release runs independent standalone SDK validation.
+
 ### v0.10.0
 
 Adds the transport-neutral `notifications` feature with bounded best-effort
