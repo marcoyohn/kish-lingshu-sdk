@@ -1,13 +1,14 @@
 [package]
 name = "kish-lingshu-foundation-contract"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Acyclic shared value primitives for Kish Lingshu contracts"
 
 [features]
+notifications = ["dep:serde_json"]
 service-auth = ["dep:base64", "dep:ring", "dep:serde_json"]
-service-transport = ["service-auth", "dep:serde_json", "serde_json/raw_value", "dep:url"]
+service-transport = ["notifications", "service-auth", "dep:serde_json", "serde_json/raw_value", "dep:url"]
 
 [dependencies]
 chrono = { workspace = true, features = ["serde"] }

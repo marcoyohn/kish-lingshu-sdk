@@ -962,3 +962,16 @@ pub fn service_event(_attribute: TokenStream, _item: TokenStream) -> TokenStream
     .into_compile_error()
     .into()
 }
+
+mod notifications;
+#[proc_macro_attribute]
+pub fn lingshu_notifications(attribute: TokenStream, item: TokenStream) -> TokenStream {
+    match notifications::expand(attribute.into(), parse_macro_input!(item as ItemImpl)) {
+        Ok(tokens) => tokens.into(),
+        Err(error) => error.into_compile_error().into(),
+    }
+}
+#[proc_macro_attribute]
+pub fn notification_handler(_attribute: TokenStream, _item: TokenStream) -> TokenStream {
+    Error::new(Span::call_site(), "notification_handler must be inside lingshu_notifications").into_compile_error().into()
+}

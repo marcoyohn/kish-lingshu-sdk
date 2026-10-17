@@ -56,6 +56,25 @@ Local Workspace/Sandbox execution, permission journals and CLI presentation belo
 to the source product and are not part of the public SDK export.
 
 
+### v0.10.0
+
+Adds the transport-neutral `notifications` feature with bounded best-effort
+fanout. Register multiple handlers with `NotificationHandler`, `register_fn`, or
+`#[lingshu_notifications]` / `#[notification_handler(kind = "...")]` and keep the
+returned registration guards alive. Each matching registration gets at most one
+attempt per received notification; failures are not retried or persisted.
+
+Native `ApplicationNotifications` uses one exact application topic shared by all
+notification kinds and integrates with the managed service connection. It needs
+the matching Lingshu notification grants and bridge implementation. Reconnection
+restores subscription without replay. Applications own filtering, authoritative
+state reads and reconciliation after lost hints; cache and inbox hints can share
+the same dispatcher. Redis or other transports can implement `NotificationTransport`.
+
+SDK/macros/SQLx journal are v0.10.0, Foundation contracts v0.5.0; Runtime contracts
+remain v0.5.0 and Event Dispatch contracts v0.3.1. Pin all packages to one public
+commit. Publishing the SDK does not deploy the matching server plugin.
+
 ### v0.9.0
 
 Adds the `participant-configuration` feature and authenticated native rule

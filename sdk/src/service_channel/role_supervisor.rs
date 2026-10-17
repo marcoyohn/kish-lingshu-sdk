@@ -113,6 +113,8 @@ impl ChannelRoleStatus {
 /// Close stops every declaration before one bounded remote drain pass. Remote
 /// failures remain in role status; `close` proves local cleanup only.
 pub struct ManagedRoleChannel {
+    pub(super) notification_transport:
+        watch::Receiver<Option<Arc<super::notifications::NotificationTransport>>>,
     supervisor: ManagedServiceChannel,
     pub(super) commands: RoleCommands,
     pub(super) registration_hints: tokio::sync::broadcast::Sender<
@@ -278,8 +280,12 @@ impl ServiceChannelSessions {
             .as_str()
             .to_owned();
         let registration_hints = self.registration_hints.clone();
+        let (notification_sender, notification_receiver) =
+            watch::channel(Some(self.notification_transport()?));
         Ok(ManagedRoleChannel {
+            notification_transport: notification_receiver,
             supervisor: ManagedServiceChannel::start(RoleOwner {
+                notification_transport: notification_sender,
                 pool: self,
                 pool_connectivity,
                 connectivity: connectivity_sender,
@@ -323,6 +329,7 @@ impl ServiceChannelSessions {
 mod mutations;
 
 struct RoleOwner {
+    notification_transport: watch::Sender<Option<Arc<super::notifications::NotificationTransport>>>,
     pool: ServiceChannelSessions,
     pool_connectivity: watch::Receiver<super::ChannelConnectivityStatus>,
     connectivity: watch::Sender<super::ChannelConnectivityStatus>,
@@ -408,6 +415,7 @@ impl RoleOwner {
             // original accepted executions/reports on the still-open transport.
             #[cfg(feature = "event-publication-zenoh")]
             self.publication.send_replace(None);
+            self.notification_transport.send_replace(None);
             for role in &mut self.roles {
                 role.begin_rotation_drain();
             }
@@ -499,7 +507,10 @@ impl RoleOwner {
             .ok_or(ChannelSessionError::InvalidResponse)?;
         #[cfg(feature = "event-publication-zenoh")]
         let publication = self.candidate.as_ref().unwrap().publication_client()?;
+        let notification_transport = self.candidate.as_ref().unwrap().notification_transport()?;
         let old = std::mem::replace(&mut self.pool, self.candidate.take().unwrap());
+        self.notification_transport
+            .send_replace(Some(notification_transport));
         self.pool_connectivity = self.pool.subscribe_connectivity();
         #[cfg(feature = "event-publication-zenoh")]
         self.publication.send_replace(Some(publication));
@@ -810,6 +821,7 @@ impl AuthorizationOwner for RoleOwner {
         }
         #[cfg(feature = "event-publication-zenoh")]
         self.publication.send_replace(None);
+        self.notification_transport.send_replace(None);
         for (role, status) in self.roles.iter().zip(&mut self.report) {
             role.request_stop();
             status.last_error = Some(ChannelSessionError::Transport);

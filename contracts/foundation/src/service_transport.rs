@@ -1,4 +1,6 @@
 //! Bounded wire values. No Zenoh types, sockets, role authority or persistence.
+pub mod notifications;
+
 use std::{collections::HashSet, fmt};
 
 use serde::{Deserialize, Serialize};

@@ -55,6 +55,8 @@ pub use registered_consumers::{
     RegisteredConsumerBinding, RegisteredConsumerPlan, RegisteredConsumerUpdates,
 };
 #[cfg(feature = "service-zenoh")]
+mod notifications;
+#[cfg(feature = "service-zenoh")]
 mod role_changes;
 #[cfg(feature = "service-zenoh")]
 mod runtime;
@@ -62,6 +64,8 @@ mod runtime;
 pub use activation::{
     CapabilityActivationState, CapabilityActivationStatus, CatalogActivation, CatalogActivationPlan,
 };
+#[cfg(feature = "service-zenoh")]
+pub use notifications::ApplicationNotifications;
 #[cfg(feature = "service-zenoh")]
 pub use runtime::{
     ManagedRegisteredService, NativeRuntimeError, NativeRuntimeStatus, RegisteredServiceRuntime,

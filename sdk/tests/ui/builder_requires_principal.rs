@@ -1,7 +1,9 @@
-use kish_lingshu_sdk::{ClientBuilder, ClientConfig};
+use kish_lingshu_sdk::{ClientBuilder, ClientConfig, NoPrincipal};
 
 fn connect() {
-    let _ = ClientBuilder::new(ClientConfig::new("https://lingshu.example")).connect();
+    let builder: ClientBuilder<NoPrincipal> =
+        ClientBuilder::new(ClientConfig::new("https://lingshu.example"));
+    let _ = builder.connect();
 }
 
 fn main() {}

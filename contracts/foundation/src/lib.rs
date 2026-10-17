@@ -231,3 +231,6 @@ mod tests {
         assert!(IdempotencyKey::new("x".repeat(MAX_IDEMPOTENCY_KEY_BYTES + 1)).is_err());
     }
 }
+
+#[cfg(feature = "notifications")]
+pub mod notifications;

@@ -61,3 +61,8 @@ pub mod participant_configuration;
 pub mod provider;
 
 pub mod human_tasks;
+
+#[cfg(feature = "notifications")]
+pub mod notifications;
+#[cfg(feature = "notifications")]
+pub use kish_lingshu_sdk_macros::{lingshu_notifications, notification_handler};

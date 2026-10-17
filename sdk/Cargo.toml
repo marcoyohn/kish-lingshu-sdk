@@ -1,11 +1,12 @@
 [package]
 name = "kish-lingshu-sdk"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Rust SDK for Kish Lingshu application integrations"
 
 [features]
+notifications = ["dep:tokio", "dep:kish-lingshu-sdk-macros", "kish-lingshu-foundation-contract/notifications"]
 default = ["http-client"]
 http-client = [
   "dep:async-stream",
@@ -52,7 +53,7 @@ service-auth-core = [
 participant-configuration = ["service-manifest", "dep:tokio"]
 service-channel = ["participant-configuration", "dep:zenss-client-sdk", "service-auth-core", "kish-lingshu-runtime-contract/service-transport", "dep:rcgen"]
 # Finite outbound TLS sessions only; route/role activation remains separate.
-service-zenoh = ["service-channel", "dep:base64", "dep:metrics", "dep:zenoh", "dep:tracing", "dep:tracing-subscriber"]
+service-zenoh = ["notifications", "service-channel", "dep:base64", "dep:metrics", "dep:zenoh", "dep:tracing", "dep:tracing-subscriber"]
 # Explicit authenticated, unencrypted private-network profile; never a fallback.
 service-plaintext = ["service-zenoh", "zenoh/auth_pubkey", "zenss-client-sdk/plaintext", "dep:rsa", "dep:rand"]
 # Explicit finite Call bindings; Async additionally requires enable_async_calls.
@@ -82,7 +83,7 @@ jsonschema = { workspace = true, optional = true }
 kish-lingshu-event-dispatch-contract = { workspace = true }
 kish-lingshu-foundation-contract = { workspace = true }
 kish-lingshu-runtime-contract = { workspace = true }
-kish-lingshu-sdk-macros = { path = "macros", version = "=0.9.0", optional = true }
+kish-lingshu-sdk-macros = { path = "macros", version = "=0.10.0", optional = true }
 metrics = { workspace = true, optional = true }
 percent-encoding = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }

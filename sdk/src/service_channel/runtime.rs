@@ -47,6 +47,7 @@ pub enum NativeRuntimeStatus {
 /// dedicated ServiceConnection; HTTP heartbeat roles cannot share this owner.
 /// Plan update/status handles remain valid across physical channel replacement.
 pub struct RegisteredServiceRuntime {
+    notifications: Option<super::ApplicationNotifications>,
     connection: ServiceConnection,
     instance: ServiceInstanceRegistration,
     deployment: Option<RouteIdentity>,
@@ -78,6 +79,7 @@ impl RegisteredServiceRuntime {
             return Err(ChannelSessionError::InvalidConfig);
         }
         Ok(Self {
+            notifications: None,
             connection,
             instance,
             deployment,
@@ -92,6 +94,11 @@ impl RegisteredServiceRuntime {
             #[cfg(feature = "event-consumer-zenoh")]
             consumers: None,
         })
+    }
+    /// Attach one logical application wakeup subscription to the shared transport.
+    pub fn with_notifications(mut self, notifications: super::ApplicationNotifications) -> Self {
+        self.notifications = Some(notifications);
+        self
     }
     pub fn with_transport(mut self, transport: ChannelTransport) -> Self {
         self.transport = transport;
@@ -145,6 +152,7 @@ impl RegisteredServiceRuntime {
             .connection
             .claim_native_runtime()
             .map_err(|_| ChannelSessionError::InvalidConfig)?;
+        let notification_owner = self.notifications.as_ref().map(|n| n.claim()).transpose()?;
         let (stop, stopped) = watch::channel(false);
         let (status_tx, status) = watch::channel(NativeRuntimeStatus::Connecting);
         let (role_tx, roles) = watch::channel(Vec::new());
@@ -157,6 +165,7 @@ impl RegisteredServiceRuntime {
         };
         let task = tokio::spawn(async move {
             let _permit = permit;
+            let _notification_owner = notification_owner;
             let result = self
                 .run(
                     stopped,
@@ -279,7 +288,13 @@ impl RegisteredServiceRuntime {
                             #[cfg(not(feature = "event-consumer-zenoh"))]
                             let consumers =
                                 std::future::pending::<Result<(), ChannelSessionError>>();
-                            tokio::select! { result = calls => result, result = consumers => result }
+                            let notifications = async {
+                                match &self.notifications {
+                                    Some(n) => n.run_on(&channel).await,
+                                    None => std::future::pending().await,
+                                }
+                            };
+                            tokio::select! { result = calls => result, result = consumers => result, result = notifications => result }
                         };
                         tokio::pin!(plans);
                         loop {
